@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { extractBearerToken, getEffectiveAccess } from "@/lib/adminAccess";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -24,17 +25,9 @@ function jsonError(message: string, status = 400) {
 }
 
 async function assertAdmin(request: NextRequest) {
-  if (!supabaseAdmin) return false;
-  const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
-  if (!token) return false;
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !data.user) return false;
-  const { data: role } = await supabaseAdmin
-    .from("site_user_roles")
-    .select("role")
-    .eq("user_id", data.user.id)
-    .maybeSingle();
-  return role?.role === "administrator";
+  const token = extractBearerToken(request.headers.get("authorization"));
+  const access = await getEffectiveAccess(token);
+  return access.isAdmin;
 }
 
 async function addDiscordRole(discordId: string, roleId: string): Promise<string | null> {

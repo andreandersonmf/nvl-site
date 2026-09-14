@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { extractBearerToken, getEffectiveAccess } from "@/lib/adminAccess";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -66,19 +67,9 @@ export async function GET(request: NextRequest) {
   try {
     if (!supabaseAdmin) return jsonError("Supabase not configured.", 500);
 
-    const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
-    if (!token) return jsonError("Not authenticated.", 401);
-
-    const { data: user, error: uErr } = await supabaseAdmin.auth.getUser(token);
-    if (uErr || !user.user) return jsonError("Invalid session.", 401);
-
-    const { data: role } = await supabaseAdmin
-      .from("site_user_roles")
-      .select("role")
-      .eq("user_id", user.user.id)
-      .maybeSingle();
-
-    if (role?.role !== "administrator") return jsonError("Admin only.", 403);
+    const token = extractBearerToken(request.headers.get("authorization"));
+    const access = await getEffectiveAccess(token);
+    if (!access.isAdmin) return jsonError("Admin only.", 403);
 
     const { data, error } = await supabaseAdmin
       .from("referee_ratings")

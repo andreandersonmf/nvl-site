@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { extractBearerToken, getEffectiveAccess } from "@/lib/adminAccess";
 
 export const runtime = "nodejs";
 
@@ -154,17 +155,9 @@ function buildEmbed(match: MatchPayload, eventType: MatchStatus) {
 }
 
 async function assertAdmin(request: NextRequest) {
-  if (!supabaseAdmin) return false;
-  const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
-  if (!token) return false;
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !data.user) return false;
-  const { data: roleRow } = await supabaseAdmin
-    .from("site_user_roles")
-    .select("role")
-    .eq("user_id", data.user.id)
-    .maybeSingle();
-  return roleRow?.role === "administrator";
+  const token = extractBearerToken(request.headers.get("authorization"));
+  const access = await getEffectiveAccess(token);
+  return access.isAdmin;
 }
 
 async function sendDiscordMessage(channelId: string, body: Record<string, unknown>) {
