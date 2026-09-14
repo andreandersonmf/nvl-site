@@ -25,54 +25,50 @@ async function assertRefereeOrAdmin(request: NextRequest, matchId: number) {
   const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
   if (!token) return { ok: false, reason: "Not authenticated." };
 
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !data.user) return { ok: false, reason: "Invalid session." };
+  const { data: authData, error: authErr } = await supabaseAdmin.auth.getUser(token);
+  if (authErr || !authData.user) return { ok: false, reason: "Invalid session." };
 
-  // Check role
+  const authUserId = authData.user.id;
+
+  // Get profile (has discord_id and links to site_user_roles via profile_id)
+  const { data: profile } = await supabaseAdmin
+    .from("profiles")
+    .select("id, discord_id, discord_username")
+    .eq("auth_user_id", authUserId)
+    .maybeSingle();
+
+  if (!profile) return { ok: false, reason: "Profile not found. Please log in via Discord first." };
+
+  // Check role using profile_id (correct column name)
   const { data: roleRow } = await supabaseAdmin
     .from("site_user_roles")
     .select("role")
-    .eq("user_id", data.user.id)
+    .eq("profile_id", profile.id)
     .maybeSingle();
 
   // Admins always pass
   if (roleRow?.role === "administrator") return { ok: true };
 
-  // For referees: match by discord_username from profile → staff_applications
+  // Referee: find their approved application by discord_id
   if (roleRow?.role === "referee") {
-    // Get the logged-in user's Discord username from their profile
-    const { data: profile } = await supabaseAdmin
-      .from("profiles")
-      .select("discord_username, discord_id")
-      .eq("auth_user_id", data.user.id)
-      .maybeSingle();
+    if (!profile.discord_id) {
+      return { ok: false, reason: "Your profile has no Discord ID linked." };
+    }
 
-    if (!profile) return { ok: false, reason: "Profile not found." };
-
-    // Find their approved referee application by discord_username OR discord_id
-    const { data: apps } = await supabaseAdmin
-      .from("staff_applications")
-      .select("id")
-      .eq("role", "Referee")
-      .eq("approved", true);
-
-    if (!apps || apps.length === 0)
-      return { ok: false, reason: "No approved referee application found." };
-
-    // Find by discord_username (case-insensitive) or discord_id
+    // Match application by discord_id
     const { data: appRow } = await supabaseAdmin
       .from("staff_applications")
       .select("id")
       .eq("role", "Referee")
       .eq("approved", true)
-      .or(
-        `discord_username.ilike.${profile.discord_username},discord_id.eq.${profile.discord_id}`
-      )
+      .eq("discord_id", profile.discord_id)
       .maybeSingle();
 
-    if (!appRow) return { ok: false, reason: "Referee application not found for your account." };
+    if (!appRow) {
+      return { ok: false, reason: "No approved Referee application found for your Discord account." };
+    }
 
-    // Check if this referee is assigned to the match
+    // Check if assigned to this match
     const { data: match } = await supabaseAdmin
       .from("matches")
       .select("referee_id")
@@ -84,7 +80,7 @@ async function assertRefereeOrAdmin(request: NextRequest, matchId: number) {
     return { ok: false, reason: "You are not assigned as referee for this match." };
   }
 
-  return { ok: false, reason: "You are not assigned as referee for this match." };
+  return { ok: false, reason: "You do not have permission to start matches." };
 }
 
 async function sendDiscordMessage(channelId: string, body: Record<string, unknown>) {
@@ -113,7 +109,7 @@ export async function POST(request: NextRequest) {
       streamerDiscordId?: string;
     };
 
-    if (!matchId) return jsonError("matchId required.");
+    if (!matchId)          return jsonError("matchId required.");
     if (!matchLink?.trim()) return jsonError("matchLink is required.");
 
     const auth = await assertRefereeOrAdmin(request, matchId);
@@ -153,7 +149,7 @@ export async function POST(request: NextRequest) {
         color: 0xef4444,
         fields: [
           { name: "Stage",  value: match.stage || "TBA", inline: true },
-          { name: "Status", value: "`LIVE NOW`",         inline: true },
+          { name: "Status", value: "`LIVE NOW`",          inline: true },
         ],
         footer: { text: "National Volleyball League • Click the button to join" },
         timestamp: new Date().toISOString(),
