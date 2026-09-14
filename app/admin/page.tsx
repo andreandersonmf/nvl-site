@@ -5629,7 +5629,7 @@ export default function CVRSASitePage() {
                                   <div key={discordId} className="rounded-2xl border border-white/10 bg-white/5 p-4">
                                     <div className="mb-2 flex items-center justify-between">
                                       <p className="font-semibold text-white">
-                                        <@{discordId}>
+                                        {discordId}
                                       </p>
                                       <span className="rounded-full bg-amber-400/20 px-3 py-1 text-xs font-bold text-amber-300">
                                         ⭐ {avg.toFixed(1)} / 5 ({ratings.length} vote{ratings.length !== 1 ? "s" : ""})
@@ -5641,7 +5641,7 @@ export default function CVRSASitePage() {
                                           <div className="flex items-center gap-2 text-white/70">
                                             <span className="font-semibold text-amber-300">{"⭐".repeat(r.rating)}</span>
                                             <span className="text-white/40">•</span>
-                                            <span>Captain <@{r.captain_discord_id}></span>
+                                            <span>Captain {r.captain_discord_id}</span>
                                             {r.matches && (
                                               <>
                                                 <span className="text-white/40">•</span>
