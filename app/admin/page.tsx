@@ -89,6 +89,16 @@ type MatchRow = {
   season_id?: string | null;
   created_at: string;
 
+  // Match start fields
+  match_link: string | null;
+  stream_link: string | null;
+  streamer_discord_id: string | null;
+  referee_discord_id: string | null;
+
+  // Result MVPs
+  wmvp_discord_id: string | null;
+  lmvp_discord_id: string | null;
+
   set1_home: number | null;
   set1_away: number | null;
   set2_home: number | null;
@@ -2030,6 +2040,14 @@ export default function CVRSASitePage() {
   );
   const [submittingTeam, setSubmittingTeam] = useState(false);
   const [teamPlayers, setTeamPlayers] = useState<TeamPlayer[]>([]);
+  // Start Match modal state
+  const [startMatchModal, setStartMatchModal] = useState<{ matchId: number; home: string; away: string } | null>(null);
+  const [startMatchLink, setStartMatchLink]   = useState("");
+  const [startStreamLink, setStartStreamLink] = useState("");
+  const [startStreamer, setStartStreamer]     = useState("");
+  const [startMatchLoading, setStartMatchLoading] = useState(false);
+  // Referee ratings
+  const [refereeRatings, setRefereeRatings] = useState<any[]>([]);
   const [teamTransactions, setTeamTransactions] = useState<TeamTransaction[]>([]);
   const [teamRoleDrafts, setTeamRoleDrafts] = useState<Record<number, string>>({});
   const [teamSyncBusy, setTeamSyncBusy] = useState(false);
@@ -3131,23 +3149,88 @@ export default function CVRSASitePage() {
   ];
 
   async function handleApproveStaffApplication(staffId: number) {
-    if (!supabase) return;
+    if (!supabase || !adminLogged) return;
 
-    const { error } = await supabase
-      .from("staff_applications")
-      .update({
-        approved: true,
-        approved_at: new Date().toISOString(),
-      })
-      .eq("id", staffId);
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) {
+      showNotice("Session expired — please log in again.", true);
+      return;
+    }
 
-    if (error) {
-      showNotice(error.message, true);
+    const response = await fetch("/api/staff-approve", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ staffId }),
+    });
+
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showNotice(result?.error || "Failed to approve application.", true);
       return;
     }
 
     await reloadStaffApplications();
-    showNotice("Staff application approved successfully.", true);
+    const note = result.discordNote
+      ? `\nNote: ${result.discordNote}`
+      : " Discord role applied automatically.";
+    showNotice(`Staff application approved.${note}`, true);
+  }
+
+  async function handleStartMatch() {
+    if (!startMatchModal) return;
+    if (!startMatchLink.trim()) {
+      showNotice("Match Link is required.", true);
+      return;
+    }
+
+    const { data: session } = await supabase!.auth.getSession();
+    const token = session?.session?.access_token;
+    if (!token) { showNotice("Session expired.", true); return; }
+
+    setStartMatchLoading(true);
+    try {
+      const res = await fetch("/api/match-start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          matchId:           startMatchModal.matchId,
+          matchLink:         startMatchLink.trim(),
+          streamLink:        startStreamLink.trim() || undefined,
+          streamerDiscordId: startStreamer.trim()   || undefined,
+        }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showNotice(result?.error || "Failed to start match.", true);
+      } else {
+        await reloadMatches();
+        setStartMatchModal(null);
+        setStartMatchLink("");
+        setStartStreamLink("");
+        setStartStreamer("");
+        showNotice("Match started! Discord notifications sent.", true);
+      }
+    } finally {
+      setStartMatchLoading(false);
+    }
+  }
+
+  async function loadRefereeRatings() {
+    if (!supabase || !adminLogged) return;
+    const { data: session } = await supabase.auth.getSession();
+    const token = session?.session?.access_token;
+    if (!token) return;
+    const res = await fetch("/api/referee-rating", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setRefereeRatings(data.ratings || []);
+    }
   }
 
   async function handleDeleteStaffApplication(staffId: number) {
@@ -5508,6 +5591,78 @@ export default function CVRSASitePage() {
                         </div>
                       </div>
 
+                      {/* ── Referee Reputation ───────────────────────────── */}
+                      {adminLogged ? (
+                        <div>
+                          <div className="mb-3 flex items-center justify-between">
+                            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-amber-300">
+                              Referee Reputation
+                            </p>
+                            <button
+                              type="button"
+                              onClick={loadRefereeRatings}
+                              className="rounded-full border border-orange-400/20 bg-orange-400/10 px-3 py-1 text-xs font-semibold text-amber-300 transition hover:bg-orange-400/15"
+                            >
+                              Load Ratings
+                            </button>
+                          </div>
+
+                          {refereeRatings.length === 0 ? (
+                            <p className="text-sm text-white/40">
+                              Click "Load Ratings" to see referee evaluations from captains.
+                            </p>
+                          ) : (() => {
+                            // Group ratings by referee
+                            const grouped: Record<string, { ratings: any[]; avg: number }> = {};
+                            for (const r of refereeRatings) {
+                              const key = r.referee_discord_id || "unknown";
+                              if (!grouped[key]) grouped[key] = { ratings: [], avg: 0 };
+                              grouped[key].ratings.push(r);
+                            }
+                            for (const key of Object.keys(grouped)) {
+                              const sum = grouped[key].ratings.reduce((a: number, r: any) => a + r.rating, 0);
+                              grouped[key].avg = sum / grouped[key].ratings.length;
+                            }
+                            return (
+                              <div className="space-y-4">
+                                {Object.entries(grouped).map(([discordId, { ratings, avg }]) => (
+                                  <div key={discordId} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                                    <div className="mb-2 flex items-center justify-between">
+                                      <p className="font-semibold text-white">
+                                        <@{discordId}>
+                                      </p>
+                                      <span className="rounded-full bg-amber-400/20 px-3 py-1 text-xs font-bold text-amber-300">
+                                        ⭐ {avg.toFixed(1)} / 5 ({ratings.length} vote{ratings.length !== 1 ? "s" : ""})
+                                      </span>
+                                    </div>
+                                    <div className="space-y-2">
+                                      {ratings.map((r: any) => (
+                                        <div key={r.id} className="rounded-xl border border-white/5 bg-white/5 p-3 text-sm">
+                                          <div className="flex items-center gap-2 text-white/70">
+                                            <span className="font-semibold text-amber-300">{"⭐".repeat(r.rating)}</span>
+                                            <span className="text-white/40">•</span>
+                                            <span>Captain <@{r.captain_discord_id}></span>
+                                            {r.matches && (
+                                              <>
+                                                <span className="text-white/40">•</span>
+                                                <span>{r.matches.home_country} vs {r.matches.away_country}</span>
+                                              </>
+                                            )}
+                                          </div>
+                                          {r.comment && (
+                                            <p className="mt-1 text-white/60 italic">"{r.comment}"</p>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      ) : null}
+
                       <div className="rounded-[2rem] border border-yellow-400/15 bg-yellow-400/[0.04] p-6">
                         <div className="mb-4 flex items-center justify-between gap-3">
                           <div>
@@ -6660,6 +6815,23 @@ export default function CVRSASitePage() {
                                 </div>
 
                                 <div className="flex flex-wrap gap-3">
+                                  {/* Start Match button — visible to admin and referee assigned to this match,
+                                      only when status is Scheduled */}
+                                  {match.status === "Scheduled" && (adminLogged || currentUser?.isReferee) ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setStartMatchModal({ matchId: match.id, home: match.home_country, away: match.away_country });
+                                        setStartMatchLink("");
+                                        setStartStreamLink("");
+                                        setStartStreamer("");
+                                      }}
+                                      className="rounded-2xl bg-green-500 px-4 py-2 text-sm font-semibold text-black transition duration-200 hover:-translate-y-0.5 hover:scale-[1.01] active:translate-y-0.5"
+                                    >
+                                      ▶ Start Match
+                                    </button>
+                                  ) : null}
+
                                   {adminLogged ||
                                   canCurrentStatTrackerEditMatch(match) ? (
                                     <button
@@ -6992,6 +7164,75 @@ export default function CVRSASitePage() {
                 className="rounded-2xl border border-red-400/20 bg-red-400/10 px-5 py-3 text-sm font-semibold text-red-300 transition duration-200 hover:bg-red-400/15 focus:outline-none focus:ring-2 focus:ring-red-400/40"
               >
                 {confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Start Match Modal ────────────────────────────────────────── */}
+      {startMatchModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#111] p-6 shadow-2xl">
+            <h2 className="mb-1 text-lg font-bold text-white">Start Match</h2>
+            <p className="mb-4 text-sm text-white/50">
+              {startMatchModal.home} vs {startMatchModal.away}
+            </p>
+
+            <div className="mb-3">
+              <label className="mb-1 block text-xs font-semibold text-white/70">
+                Match Link <span className="text-red-400">*</span>
+              </label>
+              <input
+                type="url"
+                placeholder="https://www.roblox.com/games/..."
+                value={startMatchLink}
+                onChange={(e) => setStartMatchLink(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/30 outline-none focus:border-orange-400/50"
+              />
+            </div>
+
+            <div className="mb-3">
+              <label className="mb-1 block text-xs font-semibold text-white/70">
+                Live Stream Link <span className="text-white/30">(optional)</span>
+              </label>
+              <input
+                type="url"
+                placeholder="https://www.youtube.com/watch?v=..."
+                value={startStreamLink}
+                onChange={(e) => setStartStreamLink(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/30 outline-none focus:border-orange-400/50"
+              />
+            </div>
+
+            <div className="mb-5">
+              <label className="mb-1 block text-xs font-semibold text-white/70">
+                Streamer Discord ID <span className="text-white/30">(optional — numbers only)</span>
+              </label>
+              <input
+                type="text"
+                placeholder="123456789012345678"
+                value={startStreamer}
+                onChange={(e) => setStartStreamer(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/30 outline-none focus:border-orange-400/50"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setStartMatchModal(null)}
+                className="flex-1 rounded-xl border border-white/10 py-2 text-sm text-white/60 transition hover:bg-white/5"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleStartMatch}
+                disabled={startMatchLoading}
+                className="flex-1 rounded-xl bg-green-500 py-2 text-sm font-semibold text-black transition hover:bg-green-400 disabled:opacity-50"
+              >
+                {startMatchLoading ? "Starting…" : "Start & Notify Discord"}
               </button>
             </div>
           </div>

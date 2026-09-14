@@ -78,6 +78,7 @@ type MatchRow = {
   stats_submitted_for_review: boolean;
   season_id?: string | null;
   created_at: string;
+  match_link: string | null;
 
   set1_home: number | null;
   set1_away: number | null;
@@ -949,15 +950,31 @@ function TeamCard({
 function ScheduleCard({
   match,
   getStaffById,
+  userDiscordId,
+  teams,
 }: {
   match: MatchRow;
   getStaffById: (staffId: number | null) => StaffApplication | null;
+  userDiscordId?: string | null;
+  teams: Team[];
 }) {
   const homeCountry = getCountryByName(match.home_country);
   const awayCountry = getCountryByName(match.away_country);
   const referee = getStaffById(match.referee_id);
   const media = getStaffById(match.media_id);
   const resultStyles = getMatchResultStyles(match);
+
+  // Show match link only to captains of the two teams while match is Live
+  const isLive = match.status === "Live";
+  const isCaptainOfMatch =
+    isLive &&
+    !!userDiscordId &&
+    teams.some(
+      (t) =>
+        (t.country === match.home_country || t.country === match.away_country) &&
+        t.captain_discord_id === userDiscordId
+    );
+  const showMatchLink = isCaptainOfMatch && !!match.match_link;
 
   return (
     <div
@@ -1023,6 +1040,18 @@ function ScheduleCard({
           <span className="inline-flex rounded-full border border-orange-400/20 bg-orange-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-300">
             {match.stage}
           </span>
+        </div>
+      ) : null}
+      {showMatchLink ? (
+        <div className="mt-4">
+          <a
+            href={match.match_link!}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-full border border-red-400/30 bg-red-400/10 px-4 py-1.5 text-xs font-bold uppercase tracking-[0.15em] text-red-300 transition hover:bg-red-400/20"
+          >
+            🎮 Join Match
+          </a>
         </div>
       ) : null}
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-white/75">
@@ -4988,6 +5017,8 @@ export default function CVRSASitePage() {
                     key={match.id}
                     match={match}
                     getStaffById={getStaffById}
+                    userDiscordId={siteProfile?.discord_id}
+                    teams={teams}
                   />
                 ))
               )}
@@ -5136,6 +5167,23 @@ export default function CVRSASitePage() {
                         >
                           {match.status}
                         </span>
+                        {match.status === "Live" &&
+                         match.match_link &&
+                         siteProfile?.discord_id &&
+                         teams.some(
+                           (t) =>
+                             (t.country === match.home_country || t.country === match.away_country) &&
+                             t.captain_discord_id === siteProfile.discord_id
+                         ) ? (
+                          <a
+                            href={match.match_link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="ml-2 inline-flex items-center gap-1 rounded-full border border-red-400/30 bg-red-400/10 px-3 py-1 text-xs font-bold text-red-300 transition hover:bg-red-400/20"
+                          >
+                            🎮 Join
+                          </a>
+                        ) : null}
                       </div>
                     </div>
                   );
