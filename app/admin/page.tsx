@@ -2060,6 +2060,7 @@ export default function CVRSASitePage() {
   const [filterTeam, setFilterTeam] = useState("All");
   const [filterGroup, setFilterGroup] = useState("All");
   const [statTrackerLogged, setStatTrackerLogged] = useState(false);
+  const [refereeLogged, setRefereeLogged] = useState(false);
 
   // Discord-based access (Owner / servidor Administrator / site_user_roles).
   // Soma-se ao login por e-mail/senha acima — nunca o substitui.
@@ -2390,6 +2391,7 @@ export default function CVRSASitePage() {
 
     setAdminLogged(false);
     setStatTrackerLogged(false);
+    setRefereeLogged(false);
 
     const seasonId = await reloadLeagueSettings();
     await reloadTeams(seasonId);
@@ -2473,12 +2475,16 @@ export default function CVRSASitePage() {
         const isAdminNow = role === "admin" || access?.isAdmin === true;
         const isStatTrackerNow =
           isAdminNow || isStatTrackerRole(role) || access?.isStatTracker === true;
+        const isRefereeNow =
+          !isAdminNow && (role === "referee" || access?.isReferee === true);
 
         setAdminLogged(isAdminNow);
         setStatTrackerLogged(!isAdminNow && isStatTrackerNow);
+        setRefereeLogged(isRefereeNow);
       } else {
         setAdminLogged(false);
         setStatTrackerLogged(false);
+        setRefereeLogged(false);
         setSiteAccess(null);
       }
 
@@ -4602,9 +4608,16 @@ export default function CVRSASitePage() {
                   </a>
                 </div>
               ) : null}
+              {refereeLogged && !adminLogged ? (
+                <div className="mt-6 grid gap-3 md:grid-cols-2">
+                  <a href="#admin-matches" className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-semibold text-white/75 transition hover:-translate-y-0.5 hover:bg-white/10 hover:text-white">
+                    Matches & Stats
+                  </a>
+                </div>
+              ) : null}
             </div>
 
-            {!adminLogged && !statTrackerLogged ? (
+            {!adminLogged && !statTrackerLogged && !refereeLogged ? (
               <div className="max-w-xl space-y-4">
                 <div className="rounded-[2rem] border border-white/10 bg-[#1C120A] p-6">
                   <p className="text-sm font-medium text-white/70">
@@ -6817,7 +6830,7 @@ export default function CVRSASitePage() {
                                 <div className="flex flex-wrap gap-3">
                                   {/* Start Match button — visible to admin and referee assigned to this match,
                                       only when status is Scheduled */}
-                                  {match.status === "Scheduled" && (adminLogged || currentUser?.isReferee) ? (
+                                  {match.status === "Scheduled" && (adminLogged || refereeLogged) ? (
                                     <button
                                       type="button"
                                       onClick={() => {
