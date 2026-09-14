@@ -13,6 +13,7 @@ type LeaderboardRow = {
   wins: number;
   losses: number;
   win_mvp: number;
+  win_streak: number;
   vip_tier: "vip" | "vip_plus" | null;
 };
 
@@ -36,8 +37,9 @@ const TIERS: {
     accent: "from-orange-400 to-orange-600",
     perks: [
       "+10% ELO gained on wins",
-      "Exclusive Discord role + VIP badge on the leaderboard",
-      "Access to the VIP queue channel - wins there are worth 2x ELO",
+      "Exclusive Discord role + ⭐ badge on the leaderboard",
+      "Access to the Queue voice channel",
+      "Access to the VIP queue channel — wins there are worth 2× ELO",
     ],
   },
   {
@@ -47,9 +49,9 @@ const TIERS: {
     accent: "from-amber-300 to-amber-500",
     perks: [
       "+20% ELO gained on wins",
-      "Priority queue join - take any position, even a full one, while the queue isn't full and picks haven't started",
-      "Exclusive Discord role + VIP badge on the leaderboard",
-      "Access to the VIP queue channel - wins there are worth 2x ELO",
+      "Exclusive Discord role + 👑 badge on the leaderboard",
+      "Access to the Queue voice channel",
+      "Access to the VIP queue channel — wins there are worth 2× ELO",
     ],
   },
 ];
@@ -65,7 +67,7 @@ function vipBadge(tier: "vip" | "vip_plus" | null) {
           : "border-orange-400/30 bg-orange-400/10 text-amber-300"
       }`}
     >
-      {isPlus ? "VIP+" : "VIP"}
+      {isPlus ? "👑 VIP+" : "⭐ VIP"}
     </span>
   );
 }
@@ -200,7 +202,7 @@ export default function MatchmakingPage() {
 
         <h2 className="mt-16 text-3xl font-black">Leaderboard</h2>
         <div className="mt-6 overflow-x-auto rounded-[1.5rem] border border-white/10 bg-[#1C120A] p-5">
-          <table className="w-full min-w-[620px] text-left text-sm">
+          <table className="w-full min-w-[680px] text-left text-sm">
             <thead className="text-white/50">
               <tr>
                 <th className="py-2">#</th>
@@ -210,20 +212,22 @@ export default function MatchmakingPage() {
                 <th className="py-2 text-center">W-L</th>
                 <th className="py-2 text-center">Winrate</th>
                 <th className="py-2 text-center">MVPs (W)</th>
+                <th className="py-2 text-center">Streak</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="py-6 text-center text-white/40">Loading...</td>
+                  <td colSpan={8} className="py-6 text-center text-white/40">Loading...</td>
                 </tr>
               ) : leaderboard.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-6 text-center text-white/40">No ranked matches recorded yet.</td>
+                  <td colSpan={8} className="py-6 text-center text-white/40">No ranked matches recorded yet.</td>
                 </tr>
               ) : (
                 leaderboard.map((p, i) => {
                   const winrate = p.matches > 0 ? Math.round((p.wins / p.matches) * 100) : 0;
+                  const streak = p.win_streak ?? 0;
                   return (
                     <tr key={p.discord_id} className="border-t border-white/5">
                       <td className="py-3 font-bold text-white/40">{i + 1}</td>
@@ -241,12 +245,60 @@ export default function MatchmakingPage() {
                       <td className="py-3 text-center">{p.wins}-{p.losses}</td>
                       <td className="py-3 text-center">{winrate}%</td>
                       <td className="py-3 text-center">{p.win_mvp}</td>
+                      <td className="py-3 text-center">
+                        {streak >= 3 ? (
+                          <span className="font-bold text-orange-400">🔥 {streak}</span>
+                        ) : streak > 0 ? (
+                          <span className="text-white/60">{streak}</span>
+                        ) : (
+                          <span className="text-white/25">—</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })
               )}
             </tbody>
           </table>
+        </div>
+
+        {/* ELO Info */}
+        <div className="mt-8 rounded-[1.5rem] border border-white/10 bg-[#1C120A] p-6">
+          <h3 className="mb-4 text-lg font-bold text-amber-300">How ELO works</h3>
+          <div className="grid gap-3 text-sm text-white/70 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="font-semibold text-white">Win</p>
+              <p className="mt-1 text-green-400 font-bold">+22 ELO</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="font-semibold text-white">Loss</p>
+              <p className="mt-1 text-red-400 font-bold">−14 ELO</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="font-semibold text-white">WMVP Bonus</p>
+              <p className="mt-1 text-amber-300 font-bold">+6 ELO</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="font-semibold text-white">Leave Penalty</p>
+              <p className="mt-1 text-red-400 font-bold">−30 ELO</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="font-semibold text-white">🔥 Win Streak (3+)</p>
+              <p className="mt-1 text-orange-400 font-bold">+5 ELO bonus per win</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="font-semibold text-white">🏆 Golden Match (20%)</p>
+              <p className="mt-1 text-yellow-300 font-bold">Win ELO ×3</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="font-semibold text-white">VIP Queue</p>
+              <p className="mt-1 text-amber-300 font-bold">Wins worth 2× ELO</p>
+            </div>
+            <div className="rounded-xl border border-white/8 bg-white/[0.03] p-3">
+              <p className="font-semibold text-white">/mm notify</p>
+              <p className="mt-1 text-white/60">DM when a queue opens</p>
+            </div>
+          </div>
         </div>
 
         <section id="vip" className="mt-16">

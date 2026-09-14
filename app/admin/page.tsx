@@ -152,6 +152,8 @@ type MatchDraft = {
   stat_tracker_id: number | null;
   is_star_match: boolean;
   best_of: number;
+  wmvp_discord_id: string;
+  lmvp_discord_id: string;
 
   set1_home: number | null;
   set1_away: number | null;
@@ -186,6 +188,7 @@ type StaffApplication = {
   role: StaffRole;
   email: string | null;
   user_id: string | null;
+  discord_id: string | null;
   roblox_username: string;
   discord_username: string;
   roblox_user_id: string;
@@ -2438,6 +2441,8 @@ export default function CVRSASitePage() {
               stat_tracker_id: match.stat_tracker_id,
               is_star_match: Boolean(match.is_star_match),
               best_of: match.best_of === 5 ? 5 : 3,
+              wmvp_discord_id: match.wmvp_discord_id ?? "",
+              lmvp_discord_id: match.lmvp_discord_id ?? "",
 
               set1_home: match.set1_home ?? null,
               set1_away: match.set1_away ?? null,
@@ -3827,6 +3832,11 @@ export default function CVRSASitePage() {
       stat_tracker_id: draft.stat_tracker_id,
       is_star_match: draft.is_star_match,
       best_of: draft.best_of,
+      wmvp_discord_id: draft.wmvp_discord_id?.trim() || null,
+      lmvp_discord_id: draft.lmvp_discord_id?.trim() || null,
+      referee_discord_id: draft.referee_id
+        ? (getStaffById(draft.referee_id)?.discord_id ?? null)
+        : null,
     };
 
     if (current.stats_finalized && canEditAsAdmin) {
@@ -3997,6 +4007,11 @@ export default function CVRSASitePage() {
         media_id: draft.media_id,
         stat_tracker_id: draft.stat_tracker_id,
         is_star_match: draft.is_star_match,
+        wmvp_discord_id: draft.wmvp_discord_id?.trim() || null,
+        lmvp_discord_id: draft.lmvp_discord_id?.trim() || null,
+        referee_discord_id: draft.referee_id
+          ? (getStaffById(draft.referee_id)?.discord_id ?? null)
+          : null,
 
         set1_home: draft.set1_home,
         set1_away: draft.set1_away,
@@ -6504,6 +6519,40 @@ export default function CVRSASitePage() {
                                       disabled={!adminLogged}
                                     />
                                   </div>
+
+                                  {/* WMVP / LMVP — shown when match is Finished */}
+                                  {(draft?.status === "Finished" || match.status === "Finished") && adminLogged ? (
+                                    <>
+                                      <div>
+                                        <label className="mb-2 block text-sm font-semibold text-white/70">
+                                          WMVP — Winner MVP <span className="text-white/40 font-normal">(Discord ID)</span>
+                                        </label>
+                                        <input
+                                          type="text"
+                                          placeholder="123456789012345678"
+                                          value={draft?.wmvp_discord_id ?? ""}
+                                          onChange={(e) =>
+                                            updateMatchDraft(match.id, { wmvp_discord_id: e.target.value })
+                                          }
+                                          className="h-10 w-full rounded-2xl border border-white/10 bg-white/5 px-3 text-sm text-white placeholder:text-white/25 outline-none focus:border-orange-400/40"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="mb-2 block text-sm font-semibold text-white/70">
+                                          LMVP — Loser MVP <span className="text-white/40 font-normal">(Discord ID)</span>
+                                        </label>
+                                        <input
+                                          type="text"
+                                          placeholder="123456789012345678"
+                                          value={draft?.lmvp_discord_id ?? ""}
+                                          onChange={(e) =>
+                                            updateMatchDraft(match.id, { lmvp_discord_id: e.target.value })
+                                          }
+                                          className="h-10 w-full rounded-2xl border border-white/10 bg-white/5 px-3 text-sm text-white placeholder:text-white/25 outline-none focus:border-orange-400/40"
+                                        />
+                                      </div>
+                                    </>
+                                  ) : null}
                                 </div>
                                 {getStaffById(draft?.referee_id ?? match.referee_id) ||
                                 getStaffById(draft?.media_id ?? match.media_id) ||
