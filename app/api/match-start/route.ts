@@ -3,13 +3,13 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-const supabaseUrl        = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const serviceKey         = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const botToken           = process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN || "";
+const supabaseUrl       = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const serviceKey        = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const botToken          = process.env.DISCORD_BOT_TOKEN || process.env.DISCORD_TOKEN || "";
 
-const matchLinksChannelId   = process.env.MATCH_LINKS_CHANNEL_ID   || "1544780635384578061";
-const streamAlertChannelId  = process.env.STREAM_ALERT_CHANNEL_ID  || "1545074917639323768";
-const streamAlertRoleId     = process.env.STREAM_ALERT_ROLE_ID     || "1544780634411765886";
+const matchLinksChannelId  = process.env.MATCH_LINKS_CHANNEL_ID  || "1544780635384578061";
+const streamAlertChannelId = process.env.STREAM_ALERT_CHANNEL_ID || "1545074917639323768";
+const streamAlertRoleId    = process.env.STREAM_ALERT_ROLE_ID    || "1544780634411765886";
 
 const supabaseAdmin = supabaseUrl && serviceKey
   ? createClient(supabaseUrl, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } })
@@ -21,48 +21,67 @@ function jsonError(msg: string, status = 400) {
 
 async function assertRefereeOrAdmin(request: NextRequest, matchId: number) {
   if (!supabaseAdmin) return { ok: false, reason: "Supabase not configured." };
+
   const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
   if (!token) return { ok: false, reason: "Not authenticated." };
 
   const { data, error } = await supabaseAdmin.auth.getUser(token);
   if (error || !data.user) return { ok: false, reason: "Invalid session." };
 
-  // Check site_user_roles
+  // Check role
   const { data: roleRow } = await supabaseAdmin
     .from("site_user_roles")
     .select("role")
     .eq("user_id", data.user.id)
     .maybeSingle();
 
+  // Admins always pass
   if (roleRow?.role === "administrator") return { ok: true };
 
-  // Is a referee assigned to this specific match?
+  // For referees: match by discord_username from profile → staff_applications
   if (roleRow?.role === "referee") {
+    // Get the logged-in user's Discord username from their profile
     const { data: profile } = await supabaseAdmin
       .from("profiles")
-      .select("id")
+      .select("discord_username, discord_id")
       .eq("auth_user_id", data.user.id)
       .maybeSingle();
 
-    if (profile) {
-      const { data: appRow } = await supabaseAdmin
-        .from("staff_applications")
-        .select("id")
-        .eq("user_id", data.user.id)
-        .eq("role", "Referee")
-        .eq("approved", true)
-        .maybeSingle();
+    if (!profile) return { ok: false, reason: "Profile not found." };
 
-      if (appRow) {
-        const { data: match } = await supabaseAdmin
-          .from("matches")
-          .select("referee_id")
-          .eq("id", matchId)
-          .maybeSingle();
+    // Find their approved referee application by discord_username OR discord_id
+    const { data: apps } = await supabaseAdmin
+      .from("staff_applications")
+      .select("id")
+      .eq("role", "Referee")
+      .eq("approved", true);
 
-        if (match?.referee_id === appRow.id) return { ok: true };
-      }
-    }
+    if (!apps || apps.length === 0)
+      return { ok: false, reason: "No approved referee application found." };
+
+    // Find by discord_username (case-insensitive) or discord_id
+    const { data: appRow } = await supabaseAdmin
+      .from("staff_applications")
+      .select("id")
+      .eq("role", "Referee")
+      .eq("approved", true)
+      .or(
+        `discord_username.ilike.${profile.discord_username},discord_id.eq.${profile.discord_id}`
+      )
+      .maybeSingle();
+
+    if (!appRow) return { ok: false, reason: "Referee application not found for your account." };
+
+    // Check if this referee is assigned to the match
+    const { data: match } = await supabaseAdmin
+      .from("matches")
+      .select("referee_id")
+      .eq("id", matchId)
+      .maybeSingle();
+
+    if (match?.referee_id === appRow.id) return { ok: true };
+
+    return { ok: false, reason: "You are not assigned as referee for this match." };
   }
 
   return { ok: false, reason: "You are not assigned as referee for this match." };
@@ -95,7 +114,7 @@ export async function POST(request: NextRequest) {
     };
 
     if (!matchId) return jsonError("matchId required.");
-    if (!matchLink || !matchLink.trim()) return jsonError("matchLink is required.");
+    if (!matchLink?.trim()) return jsonError("matchLink is required.");
 
     const auth = await assertRefereeOrAdmin(request, matchId);
     if (!auth.ok) return jsonError(auth.reason!, 403);
@@ -111,7 +130,7 @@ export async function POST(request: NextRequest) {
     if (match.status !== "Scheduled")
       return jsonError(`Match is already ${match.status} — cannot start.`, 409);
 
-    // Update match to Live + store links
+    // Update to Live
     const { error: updErr } = await supabaseAdmin
       .from("matches")
       .update({
@@ -126,54 +145,46 @@ export async function POST(request: NextRequest) {
 
     const star = match.is_star_match ? " ⭐" : "";
 
-    // Post embed in #match-links with join button
-    const matchLinksEmbed = {
-      title: `🏐 MATCH STARTING${star}`,
-      description: `**${match.home_country}** vs **${match.away_country}**`,
-      color: 0xef4444,
-      fields: [
-        { name: "Stage",  value: match.stage || "TBA", inline: true },
-        { name: "Status", value: "`LIVE NOW`",         inline: true },
-      ],
-      footer: { text: "National Volleyball League • Click the button to join" },
-      timestamp: new Date().toISOString(),
-    };
-
+    // Post in #match-links
     await sendDiscordMessage(matchLinksChannelId, {
-      embeds: [matchLinksEmbed],
-      components: [
-        {
-          type: 1,
-          components: [
-            {
-              type: 2,
-              style: 5,  // Link button
-              label: "Click here to join the match",
-              url: matchLink.trim(),
-            },
-          ],
-        },
-      ],
+      embeds: [{
+        title: `🏐 MATCH STARTING${star}`,
+        description: `**${match.home_country}** vs **${match.away_country}**`,
+        color: 0xef4444,
+        fields: [
+          { name: "Stage",  value: match.stage || "TBA", inline: true },
+          { name: "Status", value: "`LIVE NOW`",         inline: true },
+        ],
+        footer: { text: "National Volleyball League • Click the button to join" },
+        timestamp: new Date().toISOString(),
+      }],
+      components: [{
+        type: 1,
+        components: [{
+          type: 2,
+          style: 5,
+          label: "Click here to join the match",
+          url: matchLink.trim(),
+        }],
+      }],
     });
 
-    // If stream link provided, post stream alert
+    // Stream alert if provided
     if (streamLink?.trim()) {
       const streamerMention = streamerDiscordId ? `<@${streamerDiscordId}>` : "Streamer";
       await sendDiscordMessage(streamAlertChannelId, {
         content: `<@&${streamAlertRoleId}> 🔴 **NVL match is LIVE${star}:** ${match.home_country} vs ${match.away_country} — streamed by ${streamerMention}`,
-        embeds: [
-          {
-            title: `🎥 NVL LIVE STREAM${star}`,
-            description: `**${match.home_country}** vs **${match.away_country}** is live now!`,
-            color: 0xef4444,
-            fields: [
-              { name: "Stage",   value: match.stage || "TBA",   inline: true },
-              { name: "Stream",  value: streamLink.trim(),       inline: false },
-            ],
-            footer: { text: "National Volleyball League • Stream Alert" },
-            timestamp: new Date().toISOString(),
-          },
-        ],
+        embeds: [{
+          title: `🎥 NVL LIVE STREAM${star}`,
+          description: `**${match.home_country}** vs **${match.away_country}** is live now!`,
+          color: 0xef4444,
+          fields: [
+            { name: "Stage",  value: match.stage || "TBA", inline: true },
+            { name: "Stream", value: streamLink.trim(),    inline: false },
+          ],
+          footer: { text: "National Volleyball League • Stream Alert" },
+          timestamp: new Date().toISOString(),
+        }],
         allowed_mentions: { roles: [streamAlertRoleId] },
       });
     }
