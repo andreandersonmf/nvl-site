@@ -302,19 +302,33 @@ export default function PickemsPage() {
     }
 
     const draft = drafts[match.id] ?? EMPTY_DRAFT;
-    const setCount = match.best_of === 5 ? 5 : 3;
-    const fields = ["set1", "set2", "set3", "set4", "set5"].slice(0, setCount);
+    const maxSets = match.best_of === 5 ? 5 : 3;
+    const fields = ["set1", "set2", "set3", "set4", "set5"].slice(0, maxSets);
 
     const payload: Record<string, number | null> = {};
+    let homeWins = 0;
+    let awayWins = 0;
     for (const field of fields) {
       const homeVal = toNullableInt(draft[`${field}_home` as keyof PredictionDraft]);
       const awayVal = toNullableInt(draft[`${field}_away` as keyof PredictionDraft]);
+
+      // Sets after the match is already decided are optional.
+      // Bo3: Set 3 is optional for a 2-0 prediction.
+      // Bo5: Sets 4 and 5 are optional for a 3-0 prediction.
+      const optional = field !== "set1" && field !== "set2" && ((maxSets === 3 && homeWins === 2 || awayWins === 2) || (maxSets === 5 && homeWins === 3 || awayWins === 3));
       if (homeVal === null || awayVal === null) {
-        showNotice(`Fill in every set (this match is Bo${setCount}).`, true);
+        if (optional) {
+          payload[`${field}_home`] = null;
+          payload[`${field}_away`] = null;
+          continue;
+        }
+        showNotice(`Fill in every required set (this match is Bo${maxSets}).`, true);
         return;
       }
       payload[`${field}_home`] = homeVal;
       payload[`${field}_away`] = awayVal;
+      if (homeVal > awayVal) homeWins++;
+      if (awayVal > homeVal) awayWins++;
     }
     // Fields beyond this match's format stay null.
     for (const field of ["set1", "set2", "set3", "set4", "set5"].slice(setCount)) {

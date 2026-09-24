@@ -3054,11 +3054,17 @@ export default function CVRSASitePage() {
     });
   }
 
-  function canCurrentStatTrackerEditMatch(match: MatchRow) {
+  function canCurrentStaffEditMatch(match: MatchRow) {
     if (match.stats_finalized) return false;
-    if (!statTrackerLogged) return false;
 
-    return match.stat_tracker_id !== null;
+    const isAssignedReferee = Boolean(
+      siteProfile?.discord_id && match.referee_discord_id &&
+      String(siteProfile.discord_id) === String(match.referee_discord_id)
+    );
+
+    const isAssignedTracker = statTrackerLogged && match.stat_tracker_id !== null;
+
+    return isAssignedReferee || isAssignedTracker;
   }
 
   const statTrackMatches = useMemo(() => {
@@ -3315,6 +3321,7 @@ export default function CVRSASitePage() {
       role: cleanRole,
       roblox_username: cleanRobloxUsername,
       discord_username: cleanDiscord,
+      discord_id: siteProfile?.discord_id ?? null,
       roblox_user_id: cleanRobloxUserId,
       commitment_confirmed: true,
       rulebook_confirmed: true,
@@ -3759,7 +3766,7 @@ export default function CVRSASitePage() {
     if (!current || !draft) return;
 
     const canEditAsAdmin = adminLogged;
-    const canEditAsTracker = canCurrentStatTrackerEditMatch(current);
+    const canEditAsTracker = canCurrentStaffEditMatch(current);
 
     if (!canEditAsAdmin && !canEditAsTracker) {
       showNotice("You can only edit matches assigned to you.", true);
@@ -3888,7 +3895,7 @@ export default function CVRSASitePage() {
 
     if (!current) return;
 
-    if (!canCurrentStatTrackerEditMatch(current)) {
+    if (!canCurrentStaffEditMatch(current)) {
       showNotice("You can only submit matches assigned to you.", true);
       return;
     }
