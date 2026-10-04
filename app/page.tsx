@@ -73,6 +73,7 @@ type MatchRow = {
   referee_id: number | null;
   media_id: number | null;
   stat_tracker_id: number | null;
+  referee_discord_id?: string | null;
   is_star_match: boolean;
   stats_finalized: boolean;
   stats_submitted_for_review: boolean;
@@ -162,6 +163,7 @@ type StaffApplication = {
   user_id: string | null;
   roblox_username: string;
   discord_username: string;
+  discord_id: string | null;
   roblox_user_id: string;
   commitment_confirmed: boolean;
   rulebook_confirmed: boolean;
@@ -3296,6 +3298,7 @@ export default function CVRSASitePage() {
       !cleanRole ||
       !cleanRobloxUsername ||
       !cleanDiscord ||
+      !siteProfile?.discord_id ||
       !cleanRobloxUserId
     ) {
       showNotice("Fill in all staff application fields before submitting.");
@@ -3321,7 +3324,7 @@ export default function CVRSASitePage() {
       role: cleanRole,
       roblox_username: cleanRobloxUsername,
       discord_username: cleanDiscord,
-      discord_id: siteProfile?.discord_id ?? null,
+      discord_id: siteProfile.discord_id,
       roblox_user_id: cleanRobloxUserId,
       commitment_confirmed: true,
       rulebook_confirmed: true,
@@ -6226,6 +6229,21 @@ export default function CVRSASitePage() {
                       className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 outline-none transition duration-200 hover:border-orange-400/30 focus:border-orange-400/40"
                       placeholder="discorduser"
                     />
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <label className="mb-2 block text-sm font-medium text-white/70">
+                      Discord ID
+                    </label>
+                    <input
+                      value={siteProfile.discord_id || ""}
+                      readOnly
+                      className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white/60 outline-none"
+                      placeholder="Discord ID from your linked account"
+                    />
+                    <p className="mt-2 text-xs text-white/40">
+                      This ID comes directly from the Discord account connected to your NVL profile and is used to apply staff permissions.
+                    </p>
                   </div>
 
                   <div className="md:col-span-2">

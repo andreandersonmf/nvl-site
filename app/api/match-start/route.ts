@@ -39,18 +39,20 @@ async function assertRefereeOrAdmin(request: NextRequest, matchId: number) {
 
   if (!profile) return { ok: false, reason: "Profile not found. Please log in via Discord first." };
 
-  // Check role using profile_id (correct column name)
-  const { data: roleRow } = await supabaseAdmin
+  // A profile can hold more than one site role, so never use maybeSingle()
+  // here. Referees who also have another staff role must still be recognized.
+  const { data: roleRows } = await supabaseAdmin
     .from("site_user_roles")
     .select("role")
-    .eq("profile_id", profile.id)
-    .maybeSingle();
+    .eq("profile_id", profile.id);
+
+  const roles = (roleRows ?? []).map((row) => String(row.role));
 
   // Admins always pass
-  if (roleRow?.role === "administrator") return { ok: true };
+  if (roles.includes("administrator")) return { ok: true };
 
   // Referee: find their approved application by discord_id
-  if (roleRow?.role === "referee") {
+  if (roles.includes("referee")) {
     if (!profile.discord_id) {
       return { ok: false, reason: "Your profile has no Discord ID linked." };
     }

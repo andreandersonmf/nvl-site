@@ -2151,6 +2151,8 @@ export default function CVRSASitePage() {
     match_date: "",
     match_time: "",
     status: "Scheduled" as MatchStatus,
+    referee_id: "",
+    media_id: "",
     is_star_match: false,
     stat_tracker_id: "",
     best_of: 3 as 3 | 5,
@@ -3114,6 +3116,23 @@ export default function CVRSASitePage() {
     return match.stat_tracker_id !== null;
   }
 
+  function canCurrentRefereeEditMatch(match: MatchRow) {
+    if (match.stats_finalized) return false;
+    if (!refereeLogged || !siteAccess?.discordId) {
+      return false;
+    }
+
+    const assignedStaffDiscordId =
+      match.referee_discord_id ?? getStaffById(match.referee_id)?.discord_id ?? null;
+
+    if (!assignedStaffDiscordId) return false;
+
+    return Boolean(
+      assignedStaffDiscordId &&
+      String(siteAccess.discordId) === String(assignedStaffDiscordId),
+    );
+  }
+
   const statTrackMatches = useMemo(() => {
     return matches
       .filter((match) => {
@@ -3191,6 +3210,66 @@ export default function CVRSASitePage() {
     showNotice(`Staff application approved.${note}`, true);
   }
 
+  async function handleFinishMatchAsReferee(matchId: number) {
+    const current = matches.find((match) => match.id === matchId);
+    const draft = matchDrafts[matchId];
+
+    if (!current || !draft) return;
+    if (!canCurrentRefereeEditMatch(current)) {
+      showNotice("You can only finish matches assigned to you.", true);
+      return;
+    }
+    if (current.status !== "Live") {
+      showNotice("Only Live matches can be finished by a referee.", true);
+      return;
+    }
+
+    const { data: session } = await supabase!.auth.getSession();
+    const token = session?.session?.access_token;
+    if (!token) {
+      showNotice("Session expired.", true);
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/match-finish", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          matchId,
+          set1_home: draft.set1_home,
+          set1_away: draft.set1_away,
+          set2_home: draft.set2_home,
+          set2_away: draft.set2_away,
+          set3_home: draft.set3_home,
+          set3_away: draft.set3_away,
+          set4_home: draft.set4_home,
+          set4_away: draft.set4_away,
+          set5_home: draft.set5_home,
+          set5_away: draft.set5_away,
+        }),
+      });
+
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showNotice(result?.error || "Failed to finish match.", true);
+        return;
+      }
+
+      await reloadMatches();
+      if (result.discordNotificationError) {
+        showNotice(`Match finished, but Discord notification failed: ${result.discordNotificationError}`, true);
+      } else {
+        showNotice("Match finished successfully. Discord result notification sent.", true);
+      }
+    } catch (error: any) {
+      showNotice(error?.message || "Failed to finish match.", true);
+    }
+  }
+
   async function handleStartMatch() {
     if (!startMatchModal) return;
     if (!startMatchLink.trim()) {
@@ -3242,6 +3321,52 @@ export default function CVRSASitePage() {
       const data = await res.json().catch(() => ({}));
       setRefereeRatings(data.ratings || []);
     }
+  }
+
+  async function handleSyncStaffDiscordId(staffId: number, discordId: string) {
+    if (!supabase || !adminLogged) return;
+
+    const cleanDiscordId = discordId.trim();
+    if (!/^\d{15,25}$/.test(cleanDiscordId)) {
+      showNotice("Discord User ID must contain 15–25 digits.", true);
+      return;
+    }
+
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) {
+      showNotice("Session expired — please log in again.", true);
+      return;
+    }
+
+    const response = await fetch("/api/staff-approve", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        action: "sync_discord_id",
+        staffId,
+        discordId: cleanDiscordId,
+      }),
+    });
+
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showNotice(result?.error || "Failed to save Discord ID.", true);
+      return;
+    }
+
+    await reloadStaffApplications();
+    showNotice(
+      result.discordNote
+        ? `Discord ID saved. ${result.discordNote}`
+        : result.roleApplied
+          ? "Discord ID saved and the staff role was applied automatically."
+          : "Discord ID saved successfully.",
+      true,
+    );
   }
 
   async function handleDeleteStaffApplication(staffId: number) {
@@ -3736,8 +3861,11 @@ export default function CVRSASitePage() {
       home_score: homeScore,
       away_score: awayScore,
       winner_country: winnerCountry,
-      referee_id: null,
-      media_id: null,
+      referee_id: matchForm.referee_id ? Number(matchForm.referee_id) : null,
+      media_id: matchForm.media_id ? Number(matchForm.media_id) : null,
+      referee_discord_id: matchForm.referee_id
+        ? (getStaffById(Number(matchForm.referee_id))?.discord_id ?? null)
+        : null,
       stat_tracker_id: matchForm.stat_tracker_id
         ? Number(matchForm.stat_tracker_id)
         : null,
@@ -3767,6 +3895,8 @@ export default function CVRSASitePage() {
       match_date: "",
       match_time: "",
       status: "Scheduled",
+      referee_id: "",
+      media_id: "",
       is_star_match: false,
       stat_tracker_id: "",
       best_of: 3,
@@ -4026,6 +4156,7 @@ export default function CVRSASitePage() {
 
         stats_finalized: true,
         stats_submitted_for_review: false,
+        discord_rating_sent: false,
       })
       .eq("id", matchId)
       .eq("stats_finalized", false)
@@ -5088,6 +5219,57 @@ export default function CVRSASitePage() {
 
                       <div>
                         <label className="mb-2 block text-sm font-medium text-white/70">
+                          Referee
+                        </label>
+                        <SelectPicker
+                          value={matchForm.referee_id}
+                          onChange={(value) =>
+                            setMatchForm((prev) => ({
+                              ...prev,
+                              referee_id: value,
+                            }))
+                          }
+                          options={[{ label: "No Referee", value: "" }, ...refereeOptions]}
+                          placeholder="Select referee"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-white/70">
+                          Media
+                        </label>
+                        <SelectPicker
+                          value={matchForm.media_id}
+                          onChange={(value) =>
+                            setMatchForm((prev) => ({
+                              ...prev,
+                              media_id: value,
+                            }))
+                          }
+                          options={[{ label: "No Media", value: "" }, ...mediaOptions]}
+                          placeholder="Select media"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-white/70">
+                          Stat Tracker
+                        </label>
+                        <SelectPicker
+                          value={matchForm.stat_tracker_id}
+                          onChange={(value) =>
+                            setMatchForm((prev) => ({
+                              ...prev,
+                              stat_tracker_id: value,
+                            }))
+                          }
+                          options={[{ label: "No Stat Tracker", value: "" }, ...statTrackerOptions]}
+                          placeholder="Select Stat Tracker"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="mb-2 block text-sm font-medium text-white/70">
                           Format
                         </label>
                         <div className="flex gap-2">
@@ -5519,7 +5701,33 @@ export default function CVRSASitePage() {
                                     </div>
                                   </div>
 
-                                  <div className="flex flex-wrap gap-2">
+                                  <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+                                    <div>
+                                      <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-white/45">
+                                        Discord ID
+                                      </label>
+                                      <input
+                                        id={`staff-discord-id-${staff.id}`}
+                                        type="text"
+                                        inputMode="numeric"
+                                        defaultValue={staff.discord_id ?? ""}
+                                        placeholder="123456789012345678"
+                                        className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none transition focus:border-orange-400/40"
+                                      />
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const input = document.getElementById(`staff-discord-id-${staff.id}`) as HTMLInputElement | null;
+                                        if (input) void handleSyncStaffDiscordId(staff.id, input.value);
+                                      }}
+                                      className="self-end rounded-xl border border-orange-400/20 bg-orange-400/10 px-4 py-2 text-sm font-semibold text-amber-300 transition hover:bg-orange-400/15"
+                                    >
+                                      Save ID
+                                    </button>
+                                  </div>
+
+                                  <div className="mt-4 flex flex-wrap gap-2">
                                     <button
                                       type="button"
                                       onClick={() =>
@@ -5593,6 +5801,32 @@ export default function CVRSASitePage() {
                                         {staff.role}
                                       </p>
                                     </div>
+                                  </div>
+
+                                  <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+                                    <div>
+                                      <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.16em] text-white/45">
+                                        Discord ID
+                                      </label>
+                                      <input
+                                        id={`staff-discord-id-${staff.id}`}
+                                        type="text"
+                                        inputMode="numeric"
+                                        defaultValue={staff.discord_id ?? ""}
+                                        placeholder="123456789012345678"
+                                        className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none transition focus:border-orange-400/40"
+                                      />
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const input = document.getElementById(`staff-discord-id-${staff.id}`) as HTMLInputElement | null;
+                                        if (input) void handleSyncStaffDiscordId(staff.id, input.value);
+                                      }}
+                                      className="self-end rounded-xl border border-orange-400/20 bg-orange-400/10 px-4 py-2 text-sm font-semibold text-amber-300 transition hover:bg-orange-400/15"
+                                    >
+                                      Save ID
+                                    </button>
                                   </div>
 
                                   <button
@@ -6404,9 +6638,8 @@ export default function CVRSASitePage() {
                                         min="0"
                                         disabled={
                                           !adminLogged &&
-                                          !canCurrentStatTrackerEditMatch(
-                                            match,
-                                          )
+                                          !canCurrentStatTrackerEditMatch(match) &&
+                                          !canCurrentRefereeEditMatch(match)
                                         }
                                         value={
                                           draft?.home_score ?? match.home_score
@@ -6428,9 +6661,8 @@ export default function CVRSASitePage() {
                                         min="0"
                                         disabled={
                                           !adminLogged &&
-                                          !canCurrentStatTrackerEditMatch(
-                                            match,
-                                          )
+                                          !canCurrentStatTrackerEditMatch(match) &&
+                                          !canCurrentRefereeEditMatch(match)
                                         }
                                         value={
                                           draft?.away_score ?? match.away_score
@@ -6829,9 +7061,8 @@ export default function CVRSASitePage() {
                                             disabled={
                                               match.stats_finalized ||
                                               (!adminLogged &&
-                                                !canCurrentStatTrackerEditMatch(
-                                                  match,
-                                                ))
+                                                !canCurrentStatTrackerEditMatch(match) &&
+                                                !canCurrentRefereeEditMatch(match))
                                             }
                                             value={
                                               matchDrafts[match.id]?.[
@@ -6854,7 +7085,9 @@ export default function CVRSASitePage() {
                                             placeholder="Away"
                                             disabled={
                                               match.stats_finalized ||
-                                              (!adminLogged && !canCurrentStatTrackerEditMatch(match))
+                                              (!adminLogged &&
+                                                !canCurrentStatTrackerEditMatch(match) &&
+                                                !canCurrentRefereeEditMatch(match))
                                             }
                                             value={
                                               matchDrafts[match.id]?.[
@@ -6879,7 +7112,7 @@ export default function CVRSASitePage() {
                                 <div className="flex flex-wrap gap-3">
                                   {/* Start Match button — visible to admin and referee assigned to this match,
                                       only when status is Scheduled */}
-                                  {match.status === "Scheduled" && (adminLogged || refereeLogged) ? (
+                                  {match.status === "Scheduled" && (adminLogged || canCurrentRefereeEditMatch(match)) ? (
                                     <button
                                       type="button"
                                       onClick={() => {
@@ -6891,6 +7124,23 @@ export default function CVRSASitePage() {
                                       className="rounded-2xl bg-green-500 px-4 py-2 text-sm font-semibold text-black transition duration-200 hover:-translate-y-0.5 hover:scale-[1.01] active:translate-y-0.5"
                                     >
                                       ▶ Start Match
+                                    </button>
+                                  ) : null}
+
+                                  {canCurrentRefereeEditMatch(match) && match.status === "Live" ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        openConfirmDialog({
+                                          title: "Finish Match",
+                                          message: `Finish ${match.home_country} vs ${match.away_country} and post the official result?`,
+                                          confirmLabel: "Finish Match",
+                                          onConfirm: () => handleFinishMatchAsReferee(match.id),
+                                        })
+                                      }
+                                      className="rounded-2xl border border-orange-400/20 bg-orange-400/10 px-4 py-2 text-sm font-semibold text-amber-300 transition duration-200 hover:-translate-y-0.5 hover:bg-orange-400/15 active:translate-y-0.5"
+                                    >
+                                      Finish Match
                                     </button>
                                   ) : null}
 
