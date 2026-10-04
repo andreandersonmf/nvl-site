@@ -331,7 +331,7 @@ export default function PickemsPage() {
       if (awayVal > homeVal) awayWins++;
     }
     // Fields beyond this match's format stay null.
-    for (const field of ["set1", "set2", "set3", "set4", "set5"].slice(setCount)) {
+    for (const field of ["set1", "set2", "set3", "set4", "set5"].slice(maxSets)) {
       payload[`${field}_home`] = null;
       payload[`${field}_away`] = null;
     }
