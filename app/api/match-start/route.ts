@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { authErrorResponse, authorizeAdminOrAssignedReferee, getAuthenticatedAccess } from "@/lib/matchAuth";
 
 export const runtime = "nodejs";
 
@@ -17,72 +18,6 @@ const supabaseAdmin = supabaseUrl && serviceKey
 
 function jsonError(msg: string, status = 400) {
   return NextResponse.json({ error: msg }, { status });
-}
-
-async function assertRefereeOrAdmin(request: NextRequest, matchId: number) {
-  if (!supabaseAdmin) return { ok: false, reason: "Supabase not configured." };
-
-  const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
-  if (!token) return { ok: false, reason: "Not authenticated." };
-
-  const { data: authData, error: authErr } = await supabaseAdmin.auth.getUser(token);
-  if (authErr || !authData.user) return { ok: false, reason: "Invalid session." };
-
-  const authUserId = authData.user.id;
-
-  // Get profile (has discord_id and links to site_user_roles via profile_id)
-  const { data: profile } = await supabaseAdmin
-    .from("profiles")
-    .select("id, discord_id, discord_username")
-    .eq("auth_user_id", authUserId)
-    .maybeSingle();
-
-  if (!profile) return { ok: false, reason: "Profile not found. Please log in via Discord first." };
-
-  // A profile can hold more than one site role, so never use maybeSingle()
-  // here. Referees who also have another staff role must still be recognized.
-  const { data: roleRows } = await supabaseAdmin
-    .from("site_user_roles")
-    .select("role")
-    .eq("profile_id", profile.id);
-
-  const roles = (roleRows ?? []).map((row) => String(row.role));
-
-  // Admins always pass
-  if (roles.includes("administrator")) return { ok: true };
-
-  // Referee: find their approved application by discord_id
-  if (roles.includes("referee")) {
-    if (!profile.discord_id) {
-      return { ok: false, reason: "Your profile has no Discord ID linked." };
-    }
-
-    // Match application by discord_id
-    const { data: appRow } = await supabaseAdmin
-      .from("staff_applications")
-      .select("id")
-      .eq("role", "Referee")
-      .eq("approved", true)
-      .eq("discord_id", profile.discord_id)
-      .maybeSingle();
-
-    if (!appRow) {
-      return { ok: false, reason: "No approved Referee application found for your Discord account." };
-    }
-
-    // Check if assigned to this match
-    const { data: match } = await supabaseAdmin
-      .from("matches")
-      .select("referee_id")
-      .eq("id", matchId)
-      .maybeSingle();
-
-    if (match?.referee_id === appRow.id) return { ok: true };
-
-    return { ok: false, reason: "You are not assigned as referee for this match." };
-  }
-
-  return { ok: false, reason: "You do not have permission to start matches." };
 }
 
 async function sendDiscordMessage(channelId: string, body: Record<string, unknown>) {
@@ -105,26 +40,37 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({}));
     const { matchId, matchLink, streamLink, streamerDiscordId } = body as {
-      matchId: number;
+      matchId: number | string;
       matchLink: string;
       streamLink?: string;
       streamerDiscordId?: string;
     };
 
-    if (!matchId)          return jsonError("matchId required.");
+    if (!matchId || !Number.isFinite(Number(matchId))) return jsonError("matchId required.");
     if (!matchLink?.trim()) return jsonError("matchLink is required.");
 
-    const auth = await assertRefereeOrAdmin(request, matchId);
-    if (!auth.ok) return jsonError(auth.reason!, 403);
+    // 401 when not logged in (checked before anything else is revealed).
+    const session = await getAuthenticatedAccess(request);
+    if (!session.ok) return authErrorResponse(session);
 
-    // Fetch match
+    // The match is always read from the database; the caller's request body
+    // is never trusted for who the referee is.
     const { data: match, error: mErr } = await supabaseAdmin
       .from("matches")
       .select("*")
-      .eq("id", matchId)
+      .eq("id", Number(matchId))
       .maybeSingle();
 
-    if (mErr || !match) return jsonError("Match not found.", 404);
+    if (mErr) return jsonError(mErr.message, 500);
+
+    // Admin: any match. Referee: only a match assigned to them. Others: 403.
+    // (A missing match is answered with 403 for non-admins so ids can't be probed.)
+    if (!match) {
+      return session.access.isAdmin ? jsonError("Match not found.", 404) : jsonError("You do not have permission to start this match.", 403);
+    }
+    const authz = authorizeAdminOrAssignedReferee(session.access, match);
+    if (!authz.ok) return authErrorResponse(authz);
+
     if (match.status !== "Scheduled")
       return jsonError(`Match is already ${match.status} — cannot start.`, 409);
 
@@ -137,7 +83,8 @@ export async function POST(request: NextRequest) {
         stream_link: streamLink?.trim() || null,
         streamer_discord_id: streamerDiscordId?.trim() || null,
       })
-      .eq("id", matchId);
+      .eq("id", match.id)
+      .eq("status", "Scheduled");
 
     if (updErr) return jsonError(updErr.message, 500);
 

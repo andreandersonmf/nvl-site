@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { extractBearerToken, getEffectiveAccess } from "@/lib/adminAccess";
+import { assertAdmin, authErrorResponse } from "@/lib/matchAuth";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
@@ -67,9 +67,8 @@ export async function GET(request: NextRequest) {
   try {
     if (!supabaseAdmin) return jsonError("Supabase not configured.", 500);
 
-    const token = extractBearerToken(request.headers.get("authorization"));
-    const access = await getEffectiveAccess(token);
-    if (!access.isAdmin) return jsonError("Admin only.", 403);
+    const auth = await assertAdmin(request);
+    if (!auth.ok) return authErrorResponse(auth);
 
     const { data, error } = await supabaseAdmin
       .from("referee_ratings")

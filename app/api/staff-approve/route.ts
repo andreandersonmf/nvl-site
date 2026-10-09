@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { extractBearerToken, getEffectiveAccess } from "@/lib/adminAccess";
 import { createClient } from "@supabase/supabase-js";
+import { assertAdmin, authErrorResponse } from "@/lib/matchAuth";
 
 export const runtime = "nodejs";
 
@@ -22,12 +22,6 @@ const supabaseAdmin = supabaseUrl && serviceKey
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
-}
-
-async function assertAdmin(request: NextRequest) {
-  const token = extractBearerToken(request.headers.get("authorization"));
-  const access = await getEffectiveAccess(token);
-  return access.isAdmin;
 }
 
 async function addDiscordRole(discordId: string, roleId: string): Promise<string | null> {
@@ -66,8 +60,8 @@ export async function POST(request: NextRequest) {
   try {
     if (!supabaseAdmin) return jsonError("Supabase not configured.", 500);
 
-    const isAdmin = await assertAdmin(request);
-    if (!isAdmin) return jsonError("Admin only.", 403);
+    const auth = await assertAdmin(request);
+    if (!auth.ok) return authErrorResponse(auth);
 
     const body = await request.json().catch(() => ({}));
     const staffId = Number(body?.staffId);

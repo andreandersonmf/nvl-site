@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { assertAdmin, authErrorResponse } from "@/lib/matchAuth";
 
 export const runtime = "nodejs";
+
+// FINISH STATS / FINISH MATCH - ADMIN ONLY.
+// Referees (even the one assigned to the match) are always rejected with 403;
+// unauthenticated callers get 401. The check runs on the server, before the
+// match is even read, so it cannot be bypassed from the browser.
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -14,65 +20,6 @@ const supabaseAdmin = supabaseUrl && serviceKey
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
-}
-
-function cleanId(value: unknown) {
-  return String(value ?? "").trim();
-}
-
-async function getAuthContext(request: NextRequest) {
-  if (!supabaseAdmin) return { ok: false, reason: "Supabase not configured." };
-
-  const token = cleanId(request.headers.get("authorization")).replace(/^Bearer\s+/i, "");
-  if (!token) return { ok: false, reason: "Not authenticated." };
-
-  const { data: authData, error: authErr } = await supabaseAdmin.auth.getUser(token);
-  if (authErr || !authData.user) return { ok: false, reason: "Invalid session." };
-
-  const { data: profile } = await supabaseAdmin
-    .from("profiles")
-    .select("id, discord_id")
-    .eq("auth_user_id", authData.user.id)
-    .maybeSingle();
-
-  if (!profile) return { ok: false, reason: "Profile not found. Please log in via Discord first." };
-
-  const { data: roleRows } = await supabaseAdmin
-    .from("site_user_roles")
-    .select("role")
-    .eq("profile_id", profile.id);
-
-  const roles = (roleRows ?? []).map((row) => String(row.role));
-  return {
-    ok: true,
-    isAdmin: roles.includes("administrator"),
-    isReferee: roles.includes("referee"),
-    discordId: profile.discord_id ? String(profile.discord_id) : null,
-  };
-}
-
-async function assertCanFinish(request: NextRequest, match: any) {
-  const auth = await getAuthContext(request);
-  if (!auth.ok) return auth;
-  if (auth.isAdmin) return auth;
-
-  if (!auth.isReferee || !auth.discordId) {
-    return { ok: false, reason: "You do not have permission to finish matches." };
-  }
-
-  const { data: staff } = await supabaseAdmin!
-    .from("staff_applications")
-    .select("id, discord_id")
-    .eq("role", "Referee")
-    .eq("approved", true)
-    .eq("discord_id", auth.discordId)
-    .maybeSingle();
-
-  if (!staff || Number(match.referee_id) !== Number(staff.id)) {
-    return { ok: false, reason: "You are not assigned as referee for this match." };
-  }
-
-  return auth;
 }
 
 async function sendDiscordMessage(body: Record<string, unknown>) {
@@ -102,13 +49,25 @@ function setLines(body: any) {
     .join("\n") || "Sets not filled yet.";
 }
 
+function nullableInt(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 export async function POST(request: NextRequest) {
   try {
+    // 401 not logged in / 403 not an Administrator. Nothing else is revealed.
+    const auth = await assertAdmin(request);
+    if (!auth.ok) return authErrorResponse(auth);
+
     if (!supabaseAdmin) return jsonError("Supabase not configured.", 500);
 
     const body = await request.json().catch(() => ({}));
     const matchId = Number(body.matchId);
     if (!matchId) return jsonError("matchId required.");
+
+    const finalizeStats = body.finalizeStats === true;
 
     const { data: match, error: matchError } = await supabaseAdmin
       .from("matches")
@@ -117,22 +76,23 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
 
     if (matchError || !match) return jsonError("Match not found.", 404);
-    if (match.status === "Finished") return jsonError("Match is already Finished.", 409);
-
-    const auth = await assertCanFinish(request, match);
-    if (!auth.ok) return jsonError(auth.reason!, 403);
+    if (finalizeStats) {
+      if (match.stats_finalized) return jsonError("Stats are already finalized.", 409);
+    } else if (match.status === "Finished") {
+      return jsonError("Match is already Finished.", 409);
+    }
 
     const setValues = {
-      set1_home: body.set1_home == null ? null : Number(body.set1_home),
-      set1_away: body.set1_away == null ? null : Number(body.set1_away),
-      set2_home: body.set2_home == null ? null : Number(body.set2_home),
-      set2_away: body.set2_away == null ? null : Number(body.set2_away),
-      set3_home: body.set3_home == null ? null : Number(body.set3_home),
-      set3_away: body.set3_away == null ? null : Number(body.set3_away),
-      set4_home: body.set4_home == null ? null : Number(body.set4_home),
-      set4_away: body.set4_away == null ? null : Number(body.set4_away),
-      set5_home: body.set5_home == null ? null : Number(body.set5_home),
-      set5_away: body.set5_away == null ? null : Number(body.set5_away),
+      set1_home: nullableInt(body.set1_home),
+      set1_away: nullableInt(body.set1_away),
+      set2_home: nullableInt(body.set2_home),
+      set2_away: nullableInt(body.set2_away),
+      set3_home: nullableInt(body.set3_home),
+      set3_away: nullableInt(body.set3_away),
+      set4_home: nullableInt(body.set4_home),
+      set4_away: nullableInt(body.set4_away),
+      set5_home: nullableInt(body.set5_home),
+      set5_away: nullableInt(body.set5_away),
     };
 
     const sets = [
@@ -149,8 +109,54 @@ export async function POST(request: NextRequest) {
       ? match.winner_country
       : homeScore > awayScore ? match.home_country : match.away_country;
 
-    let refereeDiscordId = match.referee_discord_id || null;
-    if (!refereeDiscordId && auth.discordId) refereeDiscordId = auth.discordId;
+    // "Finish Stats": the Admin panel's full finalize (locks the stats). The
+    // browser only sends the values from the Admin's form; the Discord result
+    // post stays with /api/match-notify exactly as before.
+    if (finalizeStats) {
+      const refereeId = nullableInt(body.referee_id);
+      let refereeDiscordId: string | null = null;
+      if (refereeId) {
+        const { data: staff } = await supabaseAdmin
+          .from("staff_applications")
+          .select("discord_id")
+          .eq("id", refereeId)
+          .maybeSingle();
+        refereeDiscordId = staff?.discord_id ? String(staff.discord_id) : null;
+      }
+
+      const { data: finalized, error: finalizeError } = await supabaseAdmin
+        .from("matches")
+        .update({
+          status: "Finished",
+          stage: typeof body.stage === "string" ? body.stage : match.stage,
+          match_date: body.match_date || match.match_date,
+          match_time: body.match_time || match.match_time,
+          home_score: homeScore,
+          away_score: awayScore,
+          winner_country: winnerCountry,
+          referee_id: refereeId,
+          media_id: nullableInt(body.media_id),
+          stat_tracker_id: nullableInt(body.stat_tracker_id),
+          is_star_match: Boolean(body.is_star_match),
+          wmvp_discord_id: String(body.wmvp_discord_id ?? "").trim() || null,
+          lmvp_discord_id: String(body.lmvp_discord_id ?? "").trim() || null,
+          referee_discord_id: refereeDiscordId,
+          ...setValues,
+          stats_finalized: true,
+          stats_submitted_for_review: false,
+          discord_rating_sent: false,
+        })
+        .eq("id", matchId)
+        .eq("stats_finalized", false)
+        .select("*")
+        .maybeSingle();
+
+      if (finalizeError) return jsonError(finalizeError.message, 500);
+      if (!finalized) return jsonError("Stats could not be finalized.", 409);
+      return NextResponse.json({ ok: true, match: finalized, previousStatus: match.status });
+    }
+
+    const refereeDiscordId = match.referee_discord_id || null;
 
     const updatePayload = {
       status: "Finished",
@@ -173,7 +179,6 @@ export async function POST(request: NextRequest) {
 
     if (updateError) return jsonError(updateError.message, 500);
     if (!finishedMatch) return jsonError("Match could not be finished.", 409);
-
     const star = finishedMatch.is_star_match ? " ⭐" : "";
     const score = `${finishedMatch.home_score ?? 0} – ${finishedMatch.away_score ?? 0}`;
     const referee = finishedMatch.referee_discord_id ? `<@${finishedMatch.referee_discord_id}>` : "N/A";

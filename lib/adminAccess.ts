@@ -26,7 +26,16 @@ export type EffectiveAccess = {
   isOwner: boolean;
   isAdmin: boolean;
   isStatTracker: boolean;
+  // isReferee is kept for backwards compatibility: it is true for Admins too
+  // (Admin can always do everything). Use isRefereeStaff / refereeStaffIds to
+  // know whether the person is really a Referee (and which one).
   isReferee: boolean;
+  // true only when the person is a Referee in their own right: either the
+  // 'referee' row in site_user_roles, or an approved Referee application.
+  isRefereeStaff: boolean;
+  // staff_applications.id of every approved Referee application linked to this
+  // person's Discord ID. This is what matches.referee_id points to.
+  refereeStaffIds: number[];
   isMedia: boolean;
   roles: string[];
 };
@@ -41,6 +50,8 @@ const NO_ACCESS: EffectiveAccess = {
   isAdmin: false,
   isStatTracker: false,
   isReferee: false,
+  isRefereeStaff: false,
+  refereeStaffIds: [],
   isMedia: false,
   roles: [],
 };
@@ -86,11 +97,26 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
     siteRoles = (roleRows ?? []).map((r) => r.role as string);
   }
 
+  // An approved Referee application (matched by Discord ID) counts as being a
+  // Referee even if nobody granted the 'referee' row in site_user_roles. This
+  // is what lets freshly approved referees reach their assigned matches.
+  let refereeStaffIds: number[] = [];
+  if (discordId) {
+    const { data: staffRows } = await supabase
+      .from("staff_applications")
+      .select("id")
+      .eq("role", "Referee")
+      .eq("approved", true)
+      .eq("discord_id", discordId);
+    refereeStaffIds = (staffRows ?? []).map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
+  }
+
   const isServerAdmin = discordId ? await isDiscordServerAdmin(discordId) : false;
 
   const isAdmin = legacyIsAdmin || isOwner || isServerAdmin || siteRoles.includes("administrator");
   const isStatTracker = isAdmin || siteRoles.includes("stat_tracker");
-  const isReferee = isAdmin || siteRoles.includes("referee");
+  const isRefereeStaff = siteRoles.includes("referee") || refereeStaffIds.length > 0;
+  const isReferee = isAdmin || isRefereeStaff;
   const isMedia = isAdmin || siteRoles.includes("media");
 
   return {
@@ -103,6 +129,8 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
     isAdmin,
     isStatTracker,
     isReferee,
+    isRefereeStaff,
+    refereeStaffIds,
     isMedia,
     roles: siteRoles,
   };

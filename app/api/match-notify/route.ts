@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { extractBearerToken, getEffectiveAccess } from "@/lib/adminAccess";
+import { assertAdmin, authErrorResponse } from "@/lib/matchAuth";
 
 export const runtime = "nodejs";
 
@@ -154,12 +154,6 @@ function buildEmbed(match: MatchPayload, eventType: MatchStatus) {
   };
 }
 
-async function assertAdmin(request: NextRequest) {
-  const token = extractBearerToken(request.headers.get("authorization"));
-  const access = await getEffectiveAccess(token);
-  return access.isAdmin;
-}
-
 async function sendDiscordMessage(channelId: string, body: Record<string, unknown>) {
   if (!botToken)   throw new Error("DISCORD_BOT_TOKEN is not configured.");
   if (!channelId)  throw new Error("Discord channel ID is not configured.");
@@ -178,8 +172,8 @@ export async function POST(request: NextRequest) {
   try {
     if (!supabaseAdmin) return jsonError("Supabase not configured.", 500);
 
-    const isAdmin = await assertAdmin(request);
-    if (!isAdmin) return jsonError("Admin only.", 403);
+    const auth = await assertAdmin(request);
+    if (!auth.ok) return authErrorResponse(auth);
 
     const body      = await request.json().catch(() => ({}));
     const eventType = cleanText(body.eventType) as MatchStatus;

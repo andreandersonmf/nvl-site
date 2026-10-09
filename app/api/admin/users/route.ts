@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "../../../../lib/supabaseAdmin";
-import { getEffectiveAccess, extractBearerToken } from "../../../../lib/adminAccess";
+import { assertAdmin, authErrorResponse } from "../../../../lib/matchAuth";
 
 export const runtime = "nodejs";
 
@@ -17,9 +17,9 @@ function jsonError(message: string, status = 400) {
 // Administrator, or someone who already has the 'administrator' role)
 // can call this.
 export async function GET(request: NextRequest) {
-  const token = extractBearerToken(request.headers.get("authorization"));
-  const access = await getEffectiveAccess(token);
-  if (!access.isAdmin) return jsonError("Admins only.", 403);
+  const auth = await assertAdmin(request);
+  if (!auth.ok) return authErrorResponse(auth);
+  const access = auth.access;
 
   const supabase = getSupabaseAdmin();
   if (!supabase) return jsonError("Supabase is not configured.", 500);
@@ -65,9 +65,9 @@ export async function GET(request: NextRequest) {
 // via DISCORD_OWNER_ID, so granting/revoking their roles would do
 // nothing useful and would only confuse the list).
 export async function POST(request: NextRequest) {
-  const token = extractBearerToken(request.headers.get("authorization"));
-  const access = await getEffectiveAccess(token);
-  if (!access.isAdmin) return jsonError("Admins only.", 403);
+  const auth = await assertAdmin(request);
+  if (!auth.ok) return authErrorResponse(auth);
+  const access = auth.access;
 
   const supabase = getSupabaseAdmin();
   if (!supabase) return jsonError("Supabase is not configured.", 500);
