@@ -4758,8 +4758,12 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
               </div>
             ) : (
               <div className="space-y-8">
-                <div className={adminLogged ? "space-y-8" : "hidden"}>
-                {adminView === "overview" ? (
+                {/* Visible for every staff role. The Admin-only views below are additionally
+              gated on adminLogged, so a Referee / Stat Tracker only ever gets Matches
+              (this wrapper used to be display:none for non-admins, which hid the
+              Matches section from Referees and Stat Trackers). */}
+              <div className="space-y-8">
+                {adminLogged && adminView === "overview" ? (
                   <div id="admin-status" className="scroll-mt-28 rounded-[2rem] border border-white/10 bg-[#1C120A] p-6">
                     <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                       <div>
@@ -4909,7 +4913,7 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                   </div>
                 ) : null}
 
-                {adminView === "setup" ? (
+                {adminLogged && adminView === "setup" ? (
                 <div id="admin-setup" className="scroll-mt-28">
                   <div className="mb-4">
                     <p className="text-sm font-semibold uppercase tracking-[0.25em] text-amber-300">
@@ -5377,7 +5381,7 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                 </div>
                 ) : null}
 
-                {adminView === "teams" ? (
+                {adminLogged && adminView === "teams" ? (
                 <div id="admin-teams-staff" className="scroll-mt-28">
                   <div className="mb-4">
                     <p className="text-sm font-semibold uppercase tracking-[0.25em] text-amber-300">
