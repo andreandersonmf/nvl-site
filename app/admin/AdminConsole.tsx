@@ -3292,6 +3292,41 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
     }
   }
 
+  // Referee "Finish Match": ends the match they were assigned (status Finished +
+  // result posted to Discord). It does NOT finalize stats - "Finish Stats" stays
+  // Administrator-only. /api/match-finish re-checks the assignment on the server.
+  async function handleFinishMatchAsReferee(matchId: number) {
+    const current = matches.find((match) => match.id === matchId);
+    if (!current || !canCurrentRefereeScoreMatch(current)) {
+      showNotice("You can only finish your assigned match while it is Live.", true);
+      return;
+    }
+
+    const { data: session } = await supabase!.auth.getSession();
+    const token = session?.session?.access_token;
+    if (!token) {
+      showNotice("Session expired.", true);
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/match-finish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ matchId }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showNotice(result?.error || "Failed to finish the match.", true);
+        return;
+      }
+      await reloadMatches();
+      showNotice("Match finished. An Administrator will finalize the stats.", true);
+    } catch (error: any) {
+      showNotice(error?.message || "Failed to finish the match.", true);
+    }
+  }
+
   async function handleStartMatch() {
     if (!startMatchModal) return;
     if (!startMatchLink.trim()) {
@@ -6457,7 +6492,11 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                       </div>
                       {statTrackMatches.length === 0 ? (
                         <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/60">
-                          {adminLogged || statTrackerLogged ? "No matches found with the selected filters." : "No matches are assigned to you yet."}
+                          {adminLogged || statTrackerLogged
+                            ? "No matches found with the selected filters."
+                            : (siteAccess?.refereeStaffIds?.length ?? 0) === 0
+                              ? `Your Discord account${siteAccess?.discordId ? ` (ID ${siteAccess.discordId})` : ""} is not linked to an approved Referee application, so no match can be assigned to you. Ask an Administrator to check that your approved Referee application uses this same Discord ID.`
+                              : "No matches are assigned to you yet."}
                         </div>
                       ) : (
                         statTrackMatches.map((match) => {
@@ -7085,6 +7124,24 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                                       className="rounded-2xl bg-orange-500 px-4 py-2 text-sm font-semibold text-black transition duration-200 hover:-translate-y-0.5 hover:scale-[1.01] active:translate-y-0.5"
                                     >
                                       Edit Score
+                                    </button>
+                                  ) : null}
+
+                                  {canCurrentRefereeScoreMatch(match) && !adminLogged ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setConfirmDialog({
+                                          open: true,
+                                          title: "Finish Match",
+                                          message: `Finish ${match.home_country} vs ${match.away_country}? Save the score first. The result will be posted and an Administrator will finalize the stats.`,
+                                          confirmLabel: "Finish Match",
+                                          onConfirm: () => handleFinishMatchAsReferee(match.id),
+                                        })
+                                      }
+                                      className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition duration-200 hover:-translate-y-0.5 hover:bg-white/10 active:translate-y-0.5"
+                                    >
+                                      Finish Match
                                     </button>
                                   ) : null}
 

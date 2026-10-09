@@ -1,13 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { assertAdmin, authErrorResponse } from "@/lib/matchAuth";
+import { authErrorResponse, authorizeAdminOrAssignedReferee, getAuthenticatedAccess } from "@/lib/matchAuth";
 
 export const runtime = "nodejs";
 
-// FINISH STATS / FINISH MATCH - ADMIN ONLY.
-// Referees (even the one assigned to the match) are always rejected with 403;
-// unauthenticated callers get 401. The check runs on the server, before the
-// match is even read, so it cannot be bypassed from the browser.
+// Two operations live here:
+//
+//   FINISH MATCH  (default)            Admin: any match | Referee: only the match
+//                                      assigned to them, and only while it is Live.
+//   FINISH STATS  (finalizeStats:true) ADMIN ONLY. A Referee - even the one assigned
+//                                      to the match - always gets 403.
+//
+// Not logged in -> 401. The checks run on the server against the match read
+// from the database, never against data sent by the browser.
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -57,9 +62,8 @@ function nullableInt(value: unknown) {
 
 export async function POST(request: NextRequest) {
   try {
-    // 401 not logged in / 403 not an Administrator. Nothing else is revealed.
-    const auth = await assertAdmin(request);
-    if (!auth.ok) return authErrorResponse(auth);
+    const session = await getAuthenticatedAccess(request);
+    if (!session.ok) return authErrorResponse(session);
 
     if (!supabaseAdmin) return jsonError("Supabase not configured.", 500);
 
@@ -69,30 +73,48 @@ export async function POST(request: NextRequest) {
 
     const finalizeStats = body.finalizeStats === true;
 
+    // Finish Stats is exclusive to Administrators (checked before the match is read).
+    if (finalizeStats && !session.access.isAdmin) {
+      return jsonError("Only an Administrator can finish stats.", 403);
+    }
+
     const { data: match, error: matchError } = await supabaseAdmin
       .from("matches")
       .select("*")
       .eq("id", matchId)
       .maybeSingle();
 
-    if (matchError || !match) return jsonError("Match not found.", 404);
+    if (matchError) return jsonError(matchError.message, 500);
+    if (!match) {
+      return session.access.isAdmin ? jsonError("Match not found.", 404) : jsonError("You do not have permission to finish this match.", 403);
+    }
+
+    // Admin: any match. Referee: only a match assigned to them (403 otherwise).
+    const authz = authorizeAdminOrAssignedReferee(session.access, match);
+    if (!authz.ok) return authErrorResponse(authz);
+    if (!session.access.isAdmin && match.status !== "Live") {
+      return jsonError("A referee can only finish a match that is Live.", 409);
+    }
     if (finalizeStats) {
       if (match.stats_finalized) return jsonError("Stats are already finalized.", 409);
     } else if (match.status === "Finished") {
       return jsonError("Match is already Finished.", 409);
     }
 
+    // Admin sends the sets from the panel. A Referee finishes with the score
+    // already saved on the match (via Edit Score): nothing from the request body.
+    const src: Record<string, unknown> = session.access.isAdmin ? body : match;
     const setValues = {
-      set1_home: nullableInt(body.set1_home),
-      set1_away: nullableInt(body.set1_away),
-      set2_home: nullableInt(body.set2_home),
-      set2_away: nullableInt(body.set2_away),
-      set3_home: nullableInt(body.set3_home),
-      set3_away: nullableInt(body.set3_away),
-      set4_home: nullableInt(body.set4_home),
-      set4_away: nullableInt(body.set4_away),
-      set5_home: nullableInt(body.set5_home),
-      set5_away: nullableInt(body.set5_away),
+      set1_home: nullableInt(src.set1_home),
+      set1_away: nullableInt(src.set1_away),
+      set2_home: nullableInt(src.set2_home),
+      set2_away: nullableInt(src.set2_away),
+      set3_home: nullableInt(src.set3_home),
+      set3_away: nullableInt(src.set3_away),
+      set4_home: nullableInt(src.set4_home),
+      set4_away: nullableInt(src.set4_away),
+      set5_home: nullableInt(src.set5_home),
+      set5_away: nullableInt(src.set5_away),
     };
 
     const sets = [

@@ -105,7 +105,7 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
     const { data: staffRows } = await supabase
       .from("staff_applications")
       .select("id")
-      .eq("role", "Referee")
+      .ilike("role", "referee")
       .eq("approved", true)
       .eq("discord_id", discordId);
     refereeStaffIds = (staffRows ?? []).map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
