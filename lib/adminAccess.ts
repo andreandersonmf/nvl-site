@@ -36,6 +36,10 @@ export type EffectiveAccess = {
   // staff_applications.id of every approved Referee application linked to this
   // person's Discord ID. This is what matches.referee_id points to.
   refereeStaffIds: number[];
+  // What the server saw while looking for this person's Referee applications.
+  // Only about the logged-in person themselves; shown in the Referee panel when
+  // no assigned match appears, to make linking problems visible.
+  refereeLookup: { profileLinked: boolean; discordIds: string[]; applicationsFound: number };
   isMedia: boolean;
   roles: string[];
 };
@@ -52,6 +56,7 @@ const NO_ACCESS: EffectiveAccess = {
   isReferee: false,
   isRefereeStaff: false,
   refereeStaffIds: [],
+  refereeLookup: { profileLinked: false, discordIds: [], applicationsFound: 0 },
   isMedia: false,
   roles: [],
 };
@@ -88,12 +93,23 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
   // missing / not linked to this login, fall back to the Discord identity that
   // Supabase Auth itself verified for this session (always a string, never edited
   // by the user), so approved staff are still recognised.
-  const discordIdentity = (user.identities ?? []).find((identity) => identity.provider === "discord");
-  const authDiscordId = discordIdentity?.id
-    ? String(discordIdentity.id)
-    : typeof user.user_metadata?.provider_id === "string"
-      ? (user.user_metadata.provider_id as string)
-      : null;
+  const isDiscordSnowflake = (v: unknown): v is string => typeof v === "string" && /^\d{5,25}$/.test(v);
+  const authDiscordIds = Array.from(
+    new Set(
+      [
+        ...(user.identities ?? [])
+          .filter((identity) => identity.provider === "discord")
+          .flatMap((identity) => [
+            identity.id,
+            identity.identity_data?.provider_id,
+            identity.identity_data?.sub,
+          ]),
+        user.user_metadata?.provider_id,
+        user.user_metadata?.sub,
+      ].filter(isDiscordSnowflake),
+    ),
+  );
+  const authDiscordId = authDiscordIds[0] ?? null;
   const profileDiscordId = profile?.discord_id ? String(profile.discord_id) : null;
   const discordId = profileDiscordId ?? authDiscordId;
   const ownerDiscordId = process.env.DISCORD_OWNER_ID || "";
@@ -111,17 +127,19 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
   // An approved Referee application (matched by Discord ID) counts as being a
   // Referee even if nobody granted the 'referee' row in site_user_roles. This
   // is what lets freshly approved referees reach their assigned matches.
-  let refereeStaffIds: number[] = [];
-  const staffLookupIds = Array.from(new Set([profileDiscordId, authDiscordId].filter((v): v is string => Boolean(v))));
-  if (staffLookupIds.length > 0) {
-    const { data: staffRows } = await supabase
-      .from("staff_applications")
-      .select("id")
-      .ilike("role", "referee")
-      .eq("approved", true)
-      .in("discord_id", staffLookupIds);
-    refereeStaffIds = (staffRows ?? []).map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
-  }
+  // The person's approved Referee applications. Linked by the verified Discord
+  // ID (profile or Supabase Auth identity) OR by the login that submitted the
+  // application (staff_applications.user_id).
+  const staffLookupIds = Array.from(new Set([profileDiscordId, ...authDiscordIds].filter((v): v is string => Boolean(v))));
+  const linkFilters = [`user_id.eq.${user.id}`];
+  if (staffLookupIds.length > 0) linkFilters.push(`discord_id.in.(${staffLookupIds.join(",")})`);
+  const { data: staffRows } = await supabase
+    .from("staff_applications")
+    .select("id")
+    .ilike("role", "referee")
+    .eq("approved", true)
+    .or(linkFilters.join(","));
+  const refereeStaffIds = (staffRows ?? []).map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
 
   const isServerAdmin = discordId ? await isDiscordServerAdmin(discordId) : false;
 
@@ -143,6 +161,11 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
     isReferee,
     isRefereeStaff,
     refereeStaffIds,
+    refereeLookup: {
+      profileLinked: Boolean(profile?.id),
+      discordIds: staffLookupIds,
+      applicationsFound: refereeStaffIds.length,
+    },
     isMedia,
     roles: siteRoles,
   };

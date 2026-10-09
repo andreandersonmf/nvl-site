@@ -59,6 +59,7 @@ type SiteAccess = {
   isReferee: boolean;
   isRefereeStaff?: boolean;
   refereeStaffIds?: number[];
+  refereeLookup?: { profileLinked: boolean; discordIds: string[]; applicationsFound: number };
   isMedia: boolean;
   roles: string[];
 };
@@ -6495,8 +6496,8 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                           {adminLogged || statTrackerLogged
                             ? "No matches found with the selected filters."
                             : (siteAccess?.refereeStaffIds?.length ?? 0) === 0
-                              ? `Your Discord account${siteAccess?.discordId ? ` (ID ${siteAccess.discordId})` : ""} is not linked to an approved Referee application, so no match can be assigned to you. Ask an Administrator to check that your approved Referee application uses this same Discord ID.`
-                              : "No matches are assigned to you yet."}
+                              ? `No approved Referee application is linked to your login, so no match can be assigned to you. Diagnostic for the Administrator — profile linked to this login: ${siteAccess?.refereeLookup?.profileLinked ? "yes" : "no"}; Discord IDs seen: ${siteAccess?.refereeLookup?.discordIds?.join(", ") || "none"}; approved Referee applications found: ${siteAccess?.refereeLookup?.applicationsFound ?? 0}.`
+                              : `Your Referee application(s) #${siteAccess?.refereeStaffIds?.join(", #")} are linked, but none of the ${matches.length} match(es) loaded for the active season is assigned to them (${matches.filter((m) => m.referee_id !== null).length} match(es) have a referee; their referee ids: ${Array.from(new Set(matches.filter((m) => m.referee_id !== null).map((m) => m.referee_id))).join(", ") || "none"}).`}
                         </div>
                       ) : (
                         statTrackMatches.map((match) => {
