@@ -39,7 +39,7 @@ export type EffectiveAccess = {
   // What the server saw while looking for this person's Referee applications.
   // Only about the logged-in person themselves; shown in the Referee panel when
   // no assigned match appears, to make linking problems visible.
-  refereeLookup: { profileLinked: boolean; discordIds: string[]; applicationsFound: number };
+  refereeLookup: { profileLinked: boolean; discordIds: string[]; applicationsFound: number; lookupError?: string | null };
   isMedia: boolean;
   roles: string[];
 };
@@ -133,12 +133,13 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
   const staffLookupIds = Array.from(new Set([profileDiscordId, ...authDiscordIds].filter((v): v is string => Boolean(v))));
   const linkFilters = [`user_id.eq.${user.id}`];
   if (staffLookupIds.length > 0) linkFilters.push(`discord_id.in.(${staffLookupIds.join(",")})`);
-  const { data: staffRows } = await supabase
+  const { data: staffRows, error: staffError } = await supabase
     .from("staff_applications")
     .select("id")
     .ilike("role", "referee")
     .eq("approved", true)
     .or(linkFilters.join(","));
+  if (staffError) console.error("[adminAccess] staff_applications lookup failed:", staffError.message);
   const refereeStaffIds = (staffRows ?? []).map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
 
   const isServerAdmin = discordId ? await isDiscordServerAdmin(discordId) : false;
@@ -165,6 +166,7 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
       profileLinked: Boolean(profile?.id),
       discordIds: staffLookupIds,
       applicationsFound: refereeStaffIds.length,
+      lookupError: staffError?.message ?? null,
     },
     isMedia,
     roles: siteRoles,
