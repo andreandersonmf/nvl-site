@@ -84,7 +84,18 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
     .maybeSingle();
   const legacyIsAdmin = legacyRoleRow?.role === "admin";
 
-  const discordId = profile?.discord_id ? String(profile.discord_id) : null;
+  // The Discord ID normally comes from the site's profile row. If that row is
+  // missing / not linked to this login, fall back to the Discord identity that
+  // Supabase Auth itself verified for this session (always a string, never edited
+  // by the user), so approved staff are still recognised.
+  const discordIdentity = (user.identities ?? []).find((identity) => identity.provider === "discord");
+  const authDiscordId = discordIdentity?.id
+    ? String(discordIdentity.id)
+    : typeof user.user_metadata?.provider_id === "string"
+      ? (user.user_metadata.provider_id as string)
+      : null;
+  const profileDiscordId = profile?.discord_id ? String(profile.discord_id) : null;
+  const discordId = profileDiscordId ?? authDiscordId;
   const ownerDiscordId = process.env.DISCORD_OWNER_ID || "";
   const isOwner = Boolean(ownerDiscordId) && discordId === ownerDiscordId;
 
@@ -101,13 +112,14 @@ export async function getEffectiveAccess(token: string | null): Promise<Effectiv
   // Referee even if nobody granted the 'referee' row in site_user_roles. This
   // is what lets freshly approved referees reach their assigned matches.
   let refereeStaffIds: number[] = [];
-  if (discordId) {
+  const staffLookupIds = Array.from(new Set([profileDiscordId, authDiscordId].filter((v): v is string => Boolean(v))));
+  if (staffLookupIds.length > 0) {
     const { data: staffRows } = await supabase
       .from("staff_applications")
       .select("id")
       .ilike("role", "referee")
       .eq("approved", true)
-      .eq("discord_id", discordId);
+      .in("discord_id", staffLookupIds);
     refereeStaffIds = (staffRows ?? []).map((r) => Number(r.id)).filter((n) => Number.isFinite(n));
   }
 
