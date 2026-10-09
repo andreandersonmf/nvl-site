@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { assertAdmin, authErrorResponse } from "@/lib/matchAuth";
 import { createClient } from "@supabase/supabase-js";
+import { timingSafeEqual } from "crypto";
 
 export const runtime = "nodejs";
 
@@ -20,12 +21,36 @@ export async function POST(request: NextRequest) {
   try {
     if (!supabaseAdmin) return jsonError("Supabase not configured.", 500);
 
-    // Only the bot should call this — authenticated via a shared bot secret
-    const auth = request.headers.get("authorization") || "";
-    const expectedSecret = process.env.BOT_INTERNAL_SECRET || "";
-    if (expectedSecret && auth !== `Bearer ${expectedSecret}`) {
-      console.error("[referee-rating] rejected: BOT_INTERNAL_SECRET is set on the site but the request did not send a matching Bearer secret.");
-      return jsonError("Unauthorized.", 401);
+    // Only the bot should call this: it must send the shared BOT_INTERNAL_SECRET.
+    // Accepted forms (the value must match exactly, whitespace around it is ignored):
+    //   Authorization: Bearer <secret>     (preferred)
+    //   Authorization: <secret>
+    //   x-bot-secret: <secret>   /   x-internal-secret: <secret>
+    const expectedSecret = (process.env.BOT_INTERNAL_SECRET || "").trim();
+    if (expectedSecret) {
+      const authHeader = request.headers.get("authorization") || "";
+      const candidates = [
+        authHeader.replace(/^Bearer\s+/i, ""),
+        request.headers.get("x-bot-secret") || "",
+        request.headers.get("x-internal-secret") || "",
+      ].map((value) => value.trim());
+
+      const expected = Buffer.from(expectedSecret);
+      const matches = candidates.some((value) => {
+        const given = Buffer.from(value);
+        return given.length === expected.length && timingSafeEqual(given, expected);
+      });
+
+      if (!matches) {
+        // Never log the secret itself - only what is needed to find the mismatch.
+        console.error("[referee-rating] rejected (401): the secret sent by the caller does not match BOT_INTERNAL_SECRET.", {
+          authorizationHeaderSent: Boolean(authHeader),
+          botSecretHeaderSent: Boolean(request.headers.get("x-bot-secret") || request.headers.get("x-internal-secret")),
+          sentLength: candidates.find((value) => value.length > 0)?.length ?? 0,
+          expectedLength: expectedSecret.length,
+        });
+        return jsonError("Unauthorized.", 401);
+      }
     }
 
     const payload = await request.json().catch(() => ({}));
