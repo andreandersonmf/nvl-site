@@ -2086,6 +2086,8 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
   // Discord-based access (Owner / servidor Administrator / site_user_roles).
   // Soma-se ao login por e-mail/senha acima — nunca o substitui.
   const [siteAccess, setSiteAccess] = useState<SiteAccess | null>(null);
+  // Approved Media members, served by the server so a Referee can pick one.
+  const [refereeMediaOptions, setRefereeMediaOptions] = useState<SelectOption[]>([]);
   const [siteUsers, setSiteUsers] = useState<SiteUser[] | null>(null);
   const [siteUsersBusyId, setSiteUsersBusyId] = useState<string | null>(null);
 
@@ -3238,24 +3240,25 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
     showNotice(`Staff application approved.${note}`, true);
   }
 
-  // Referee "Edit Score": goes through /api/match-score, which re-checks on the
-  // server that this match is assigned to the logged-in Referee. Referees can
-  // NOT finish a match or finalize stats (that is Admin only, see finishStats).
-  async function handleSaveScoreAsReferee(matchId: number) {
+  // Referee "Save Score & Details": score, WMVP / LMVP and Media of the match
+  // assigned to them, via /api/match-score. The server re-checks on every call
+  // that the match is assigned to this Referee and is Live. Referees can NOT
+  // finalize stats (Admin only, see finishStats).
+  async function saveRefereeMatchData(matchId: number): Promise<boolean> {
     const current = matches.find((match) => match.id === matchId);
     const draft = matchDrafts[matchId];
 
-    if (!current || !draft) return;
+    if (!current || !draft) return false;
     if (!canCurrentRefereeScoreMatch(current)) {
-      showNotice("You can only edit the score of your assigned match while it is Live.", true);
-      return;
+      showNotice("You can only edit your assigned match while it is Live.", true);
+      return false;
     }
 
     const { data: session } = await supabase!.auth.getSession();
     const token = session?.session?.access_token;
     if (!token) {
       showNotice("Session expired.", true);
-      return;
+      return false;
     }
 
     try {
@@ -3277,20 +3280,28 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
           set4_away: draft.set4_away,
           set5_home: draft.set5_home,
           set5_away: draft.set5_away,
+          wmvp_discord_id: draft.wmvp_discord_id ?? "",
+          lmvp_discord_id: draft.lmvp_discord_id ?? "",
+          media_id: draft.media_id ?? null,
         }),
       });
 
       const result = await res.json().catch(() => ({}));
       if (!res.ok) {
-        showNotice(result?.error || "Failed to save the score.", true);
-        return;
+        showNotice(result?.error || "Failed to save the match.", true);
+        return false;
       }
 
       await reloadMatches();
-      showNotice("Score saved.", true);
+      return true;
     } catch (error: any) {
-      showNotice(error?.message || "Failed to save the score.", true);
+      showNotice(error?.message || "Failed to save the match.", true);
+      return false;
     }
+  }
+
+  async function handleSaveScoreAsReferee(matchId: number) {
+    if (await saveRefereeMatchData(matchId)) showNotice("Score and match details saved.", true);
   }
 
   // Referee "Finish Match": ends the match they were assigned (status Finished +
@@ -3302,6 +3313,9 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
       showNotice("You can only finish your assigned match while it is Live.", true);
       return;
     }
+
+    // Save what is on screen first (score, MVPs, media) so nothing typed is lost.
+    if (!(await saveRefereeMatchData(matchId))) return;
 
     const { data: session } = await supabase!.auth.getSession();
     const token = session?.session?.access_token;
@@ -4666,6 +4680,32 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
   const isStaffOnly = !adminLogged && (refereeLogged || statTrackerLogged);
   // Non-admin staff (Referee / Stat Tracker) only ever get the Matches page.
   const adminView: AdminView = adminLogged ? getAdminView(pathname) : "matches";
+
+  useEffect(() => {
+    if (!refereeLogged || adminLogged || !supabase) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase!.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) return;
+      try {
+        const res = await fetch("/api/match-score", { headers: { Authorization: `Bearer ${token}` } });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || cancelled) return;
+        setRefereeMediaOptions(
+          ((json.media ?? []) as { id: number; roblox_username: string; discord_username: string }[]).map((m) => ({
+            label: `${m.roblox_username} (@${m.discord_username})`,
+            value: String(m.id),
+          })),
+        );
+      } catch {
+        /* the Media picker just stays empty */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refereeLogged, adminLogged]);
 
   // Referees / Stat Trackers have a single page; send them there from /admin.
   useEffect(() => {
@@ -6710,9 +6750,9 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                                             : null,
                                         })
                                       }
-                                      options={mediaOptions}
+                                      options={adminLogged ? mediaOptions : [{ label: "No Media", value: "" }, ...refereeMediaOptions]}
                                       placeholder="Select media"
-                                      disabled={!adminLogged}
+                                      disabled={!adminLogged && !canCurrentRefereeScoreMatch(match)}
                                     />
                                   </div>
 
@@ -6746,8 +6786,8 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                                     />
                                   </div>
 
-                                  {/* WMVP / LMVP — shown when match is Finished */}
-                                  {(draft?.status === "Finished" || match.status === "Finished") && adminLogged ? (
+                                  {/* WMVP / LMVP — Admin once Finished; the assigned Referee while the match is Live */}
+                                  {((draft?.status === "Finished" || match.status === "Finished") && adminLogged) || canCurrentRefereeScoreMatch(match) ? (
                                     <>
                                       <div>
                                         <label className="mb-2 block text-sm font-semibold text-white/70">
@@ -7128,7 +7168,7 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                                       onClick={() => handleSaveScoreAsReferee(match.id)}
                                       className="rounded-2xl bg-orange-500 px-4 py-2 text-sm font-semibold text-black transition duration-200 hover:-translate-y-0.5 hover:scale-[1.01] active:translate-y-0.5"
                                     >
-                                      Edit Score
+                                      Save Score &amp; Details
                                     </button>
                                   ) : null}
 
@@ -7139,7 +7179,7 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                                         setConfirmDialog({
                                           open: true,
                                           title: "Finish Match",
-                                          message: `Finish ${match.home_country} vs ${match.away_country}? Save the score first. The result will be posted and an Administrator will finalize the stats.`,
+                                          message: `Finish ${match.home_country} vs ${match.away_country}? Your current score, MVPs and Media will be saved first. The result will be posted and an Administrator will finalize the stats.`,
                                           confirmLabel: "Finish Match",
                                           onConfirm: () => handleFinishMatchAsReferee(match.id),
                                         })

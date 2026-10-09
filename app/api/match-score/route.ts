@@ -4,11 +4,14 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
 
-// EDIT SCORE - Administrator (any match) or the Referee assigned to the match.
+// EDIT SCORE / MATCH DETAILS - Administrator (any match) or the Referee assigned
+// to the match.
 //
-// This is the only way a Referee writes set results. The browser sends the
-// matchId and the set numbers and nothing else is accepted: status, referee,
-// stage, winner, etc. are never taken from the request. The assigned referee is
+// This is the only way a Referee writes match data. The browser sends the matchId
+// plus any of: the set numbers, wmvp_discord_id, lmvp_discord_id and media_id.
+// Nothing else is accepted: status, referee, stage, winner, stats flags, etc. are
+// never taken from the request. Fields that are not sent are left untouched. The
+// Media must be an approved Media staff member. The assigned referee is
 // looked up in the database (matches.referee_id <-> the caller's own approved
 // staff_applications ids) on every call.
 //
@@ -21,6 +24,33 @@ const SET_FIELDS = [
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
+}
+
+// Approved Media members a Referee / Admin can pick for a match. Served from the
+// server so it works regardless of what the browser may read directly.
+export async function GET(request: NextRequest) {
+  try {
+    const session = await getAuthenticatedAccess(request);
+    if (!session.ok) return authErrorResponse(session);
+    if (!session.access.isAdmin && !session.access.isRefereeStaff) {
+      return jsonError("You do not have permission to manage matches.", 403);
+    }
+
+    const supabase = getSupabaseAdmin();
+    if (!supabase) return jsonError("Supabase not configured.", 500);
+
+    const { data, error } = await supabase
+      .from("staff_applications")
+      .select("id, roblox_username, discord_username")
+      .ilike("role", "media")
+      .eq("approved", true)
+      .order("created_at", { ascending: true });
+    if (error) return jsonError(error.message, 500);
+
+    return NextResponse.json({ media: data ?? [] });
+  } catch (error: unknown) {
+    return jsonError(error instanceof Error ? error.message : "Unexpected error.", 500);
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -62,30 +92,64 @@ export async function POST(request: NextRequest) {
       return jsonError("This match is already finished.", 409);
     }
 
-    const values: Record<string, number | null> = {};
-    for (const field of SET_FIELDS) {
-      const raw = body?.[field];
-      if (raw === null || raw === undefined || raw === "") {
-        values[field] = null;
-        continue;
+    const update: Record<string, unknown> = {};
+
+    // --- set scores (only when sets are sent) ---
+    const hasSets = SET_FIELDS.some((field) => body?.[field] !== undefined);
+    if (hasSets) {
+      const values: Record<string, number | null> = {};
+      for (const field of SET_FIELDS) {
+        const raw = body?.[field];
+        if (raw === null || raw === undefined || raw === "") {
+          values[field] = null;
+          continue;
+        }
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 0 || n > 99) return jsonError(`Invalid value for ${field}.`);
+        values[field] = n;
       }
-      const n = Number(raw);
-      if (!Number.isInteger(n) || n < 0 || n > 99) return jsonError(`Invalid value for ${field}.`);
-      values[field] = n;
+
+      const pairs = [1, 2, 3, 4, 5].map((i) => [values[`set${i}_home`], values[`set${i}_away`]] as const);
+      Object.assign(update, values, {
+        home_score: pairs.filter(([h, a]) => h != null && a != null && h > a).length,
+        away_score: pairs.filter(([h, a]) => h != null && a != null && a > h).length,
+        stats_submitted_for_review: false,
+      });
     }
 
-    const pairs = [1, 2, 3, 4, 5].map((i) => [values[`set${i}_home`], values[`set${i}_away`]] as const);
-    const homeScore = pairs.filter(([h, a]) => h != null && a != null && h > a).length;
-    const awayScore = pairs.filter(([h, a]) => h != null && a != null && a > h).length;
+    // --- MVPs (Discord IDs) ---
+    for (const field of ["wmvp_discord_id", "lmvp_discord_id"] as const) {
+      if (body?.[field] === undefined) continue;
+      const text = String(body[field] ?? "").trim();
+      if (text && !/^\d{5,25}$/.test(text)) return jsonError(`${field} must be a Discord ID (numbers only).`);
+      update[field] = text || null;
+    }
+
+    // --- Media: must be an approved Media staff member ---
+    if (body?.media_id !== undefined) {
+      if (body.media_id === null || body.media_id === "") {
+        update.media_id = null;
+      } else {
+        const mediaId = Number(body.media_id);
+        if (!Number.isInteger(mediaId) || mediaId <= 0) return jsonError("Invalid media_id.");
+        const { data: mediaRow, error: mediaError } = await supabase
+          .from("staff_applications")
+          .select("id")
+          .eq("id", mediaId)
+          .ilike("role", "media")
+          .eq("approved", true)
+          .maybeSingle();
+        if (mediaError) return jsonError(mediaError.message, 500);
+        if (!mediaRow) return jsonError("That person is not an approved Media member.");
+        update.media_id = mediaId;
+      }
+    }
+
+    if (Object.keys(update).length === 0) return jsonError("Nothing to update.");
 
     const { data: updated, error: updateError } = await supabase
       .from("matches")
-      .update({
-        ...values,
-        home_score: homeScore,
-        away_score: awayScore,
-        stats_submitted_for_review: false,
-      })
+      .update(update)
       .eq("id", matchId)
       .eq("stats_finalized", false)
       .select("*")
