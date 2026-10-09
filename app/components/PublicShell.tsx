@@ -53,15 +53,18 @@ export default function PublicShell({ children }: { children: React.ReactNode })
       groups={PUBLIC_NAV}
       title="NVL"
       subtitle="National Volleyball League"
-      footer={
+      footer={(collapsed) => (
         <Link
           href="/admin"
-          className="flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-semibold text-white/60 transition hover:bg-white/5 hover:text-white"
+          title={collapsed ? "Staff panel" : undefined}
+          className={`flex items-center rounded-2xl py-2.5 text-sm font-semibold text-white/60 transition hover:bg-white/5 hover:text-white ${
+            collapsed ? "justify-center px-0" : "gap-3 px-3"
+          }`}
         >
           <Shield className="h-[18px] w-[18px] text-white/45" aria-hidden="true" />
-          Staff panel
+          <span className={collapsed ? "sr-only" : undefined}>Staff panel</span>
         </Link>
-      }
+      )}
     >
       {children}
     </Sidebar>

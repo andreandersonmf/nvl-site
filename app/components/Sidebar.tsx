@@ -3,8 +3,8 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
-import { Menu, X, type LucideIcon } from "lucide-react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Menu, PanelLeftClose, PanelLeftOpen, X, type LucideIcon } from "lucide-react";
 
 export type SidebarItem = {
   label: string;
@@ -28,20 +28,24 @@ function NavList({
   groups,
   pathname,
   onNavigate,
+  collapsed = false,
 }: {
   groups: SidebarGroup[];
   pathname: string;
   onNavigate?: () => void;
+  // Icon-only mode (desktop). Labels stay available to screen readers and as tooltips.
+  collapsed?: boolean;
 }) {
   return (
-    <nav aria-label="Main navigation" className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
+    <nav aria-label="Main navigation" className={`flex-1 overflow-y-auto py-4 ${collapsed ? "space-y-3 px-2" : "space-y-5 px-3"}`}>
       {groups.map((group, index) => (
         <div key={group.title ?? index} className="space-y-1">
-          {group.title ? (
+          {group.title && !collapsed ? (
             <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.3em] text-white/35">
               {group.title}
             </p>
           ) : null}
+          {group.title && collapsed && index > 0 ? <div className="mx-2 mb-2 border-t border-white/10" /> : null}
           {group.items.map((item) => {
             const active = isActive(pathname, item);
             const Icon = item.icon;
@@ -51,7 +55,10 @@ function NavList({
                 href={item.href}
                 onClick={onNavigate}
                 aria-current={active ? "page" : undefined}
-                className={`group flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-semibold transition duration-200 ${
+                title={collapsed ? item.label : undefined}
+                className={`group flex items-center rounded-2xl py-2.5 text-sm font-semibold transition duration-200 ${
+                  collapsed ? "justify-center px-0" : "gap-3 px-3"
+                } ${
                   active
                     ? "bg-orange-500/15 text-amber-300 shadow-[inset_0_0_0_1px_rgba(251,146,60,0.25)]"
                     : "text-white/70 hover:bg-white/5 hover:text-white"
@@ -61,7 +68,7 @@ function NavList({
                   aria-hidden="true"
                   className={`h-[18px] w-[18px] shrink-0 ${active ? "text-amber-300" : "text-white/50 group-hover:text-white/80"}`}
                 />
-                <span className="truncate">{item.label}</span>
+                <span className={collapsed ? "sr-only" : "truncate"}>{item.label}</span>
               </Link>
             );
           })}
@@ -69,6 +76,17 @@ function NavList({
       ))}
     </nav>
   );
+}
+
+const COLLAPSE_EVENT = "nvl-sidebar-collapse-change";
+
+function subscribeCollapsed(callback: () => void) {
+  window.addEventListener("storage", callback);
+  window.addEventListener(COLLAPSE_EVENT, callback);
+  return () => {
+    window.removeEventListener("storage", callback);
+    window.removeEventListener(COLLAPSE_EVENT, callback);
+  };
 }
 
 // Shared layout used by the public site and by /admin. Desktop: fixed sidebar
@@ -81,14 +99,19 @@ export default function Sidebar({
   homeHref = "/",
   footer,
   headerActions,
+  storageKey,
   children,
 }: {
   groups: SidebarGroup[];
   title: string;
   subtitle?: string;
   homeHref?: string;
-  footer?: ReactNode;
+  // The footer can be a function to adapt to the icon-only (collapsed) sidebar.
+  footer?: ReactNode | ((collapsed: boolean) => ReactNode);
   headerActions?: ReactNode;
+  // localStorage key remembering whether the desktop sidebar is collapsed.
+  // Defaults to one key per area (public site vs admin), derived from homeHref.
+  storageKey?: string;
   children: ReactNode;
 }) {
   const pathname = usePathname() || "/";
@@ -96,6 +119,30 @@ export default function Sidebar({
   // itself as soon as the route changes (link click, back button...).
   const [openedOn, setOpenedOn] = useState<string | null>(null);
   const open = openedOn === pathname;
+
+  // Desktop only: collapse to an icon-only rail. The choice is remembered per
+  // area (public site / admin) in localStorage; the mobile drawer is unaffected.
+  const collapseKey = storageKey ?? `nvl-sidebar-collapsed:${homeHref}`;
+  const collapsed = useSyncExternalStore(
+    subscribeCollapsed,
+    () => {
+      try {
+        return window.localStorage.getItem(collapseKey) === "1";
+      } catch {
+        return false;
+      }
+    },
+    () => false,
+  );
+  const toggleCollapsed = () => {
+    try {
+      window.localStorage.setItem(collapseKey, collapsed ? "0" : "1");
+    } catch {
+      /* storage unavailable: the toggle just won't be remembered */
+    }
+    window.dispatchEvent(new Event(COLLAPSE_EVENT));
+  };
+  const renderFooter = (isCollapsed: boolean) => (typeof footer === "function" ? footer(isCollapsed) : footer);
   const setOpen = (value: boolean) => setOpenedOn(value ? pathname : null);
 
   useEffect(() => {
@@ -129,13 +176,51 @@ export default function Sidebar({
     </Link>
   );
 
+  const collapsedBrand = (
+    <Link href={homeHref} title={title} aria-label={title} className="relative block h-10 w-10 overflow-hidden rounded-xl border border-white/10 bg-[#140D07]">
+      <Image src="/nvl-logo-black.png" alt="NVL logo" fill sizes="40px" className="object-cover" />
+    </Link>
+  );
+  const toggleLabel = collapsed ? "Expand sidebar" : "Collapse sidebar (icons only)";
+  const ToggleIcon = collapsed ? PanelLeftOpen : PanelLeftClose;
+
   return (
     <div className="min-h-screen bg-[#140D07] text-white selection:bg-orange-400/20 selection:text-white">
-      {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r border-white/10 bg-[#120B06] md:flex">
-        <div className="border-b border-white/10 px-5 py-5">{brand}</div>
-        <NavList groups={groups} pathname={pathname} />
-        {footer ? <div className="border-t border-white/10 p-3">{footer}</div> : null}
+      {/* Desktop sidebar: full, or icon-only when collapsed */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-white/10 bg-[#120B06] transition-[width] duration-200 md:flex ${
+          collapsed ? "w-[4.5rem]" : "w-64"
+        }`}
+      >
+        {collapsed ? (
+          <div className="flex flex-col items-center gap-3 border-b border-white/10 px-2 py-4">
+            {collapsedBrand}
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label={toggleLabel}
+              title={toggleLabel}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-white/60 transition hover:bg-white/10 hover:text-white"
+            >
+              <ToggleIcon className="h-5 w-5" aria-hidden="true" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-5 py-5">
+            <div className="min-w-0">{brand}</div>
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label={toggleLabel}
+              title={toggleLabel}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white/60 transition hover:bg-white/10 hover:text-white"
+            >
+              <ToggleIcon className="h-5 w-5" aria-hidden="true" />
+            </button>
+          </div>
+        )}
+        <NavList groups={groups} pathname={pathname} collapsed={collapsed} />
+        {footer ? <div className={`border-t border-white/10 ${collapsed ? "p-2" : "p-3"}`}>{renderFooter(collapsed)}</div> : null}
       </aside>
 
       {/* Mobile top bar */}
@@ -177,13 +262,13 @@ export default function Sidebar({
               </button>
             </div>
             <NavList groups={groups} pathname={pathname} onNavigate={() => setOpen(false)} />
-            {footer ? <div className="border-t border-white/10 p-3">{footer}</div> : null}
+            {footer ? <div className="border-t border-white/10 p-3">{renderFooter(false)}</div> : null}
           </div>
         </div>
       ) : null}
 
       {/* Content: min-w-0 + overflow-x-clip so wide tables can't push the page sideways */}
-      <div className="min-w-0 overflow-x-clip md:pl-64">{children}</div>
+      <div className={`min-w-0 overflow-x-clip transition-[padding] duration-200 ${collapsed ? "md:pl-[4.5rem]" : "md:pl-64"}`}>{children}</div>
     </div>
   );
 }
