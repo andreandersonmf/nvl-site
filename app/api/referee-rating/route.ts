@@ -75,9 +75,17 @@ export async function GET(request: NextRequest) {
       .select("*, matches(home_country, away_country, stage)")
       .order("created_at", { ascending: false });
 
-    if (error) return jsonError(error.message, 500);
+    if (!error) return NextResponse.json({ ratings: data });
 
-    return NextResponse.json({ ratings: data });
+    // If the match join fails for any reason, still return the ratings themselves
+    // (the match names are just left out) instead of showing nothing.
+    const plain = await supabaseAdmin
+      .from("referee_ratings")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (plain.error) return jsonError(plain.error.message, 500);
+
+    return NextResponse.json({ ratings: plain.data });
   } catch (e: any) {
     return jsonError(e?.message || "Unexpected error.", 500);
   }

@@ -2069,6 +2069,9 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
   const [startMatchLoading, setStartMatchLoading] = useState(false);
   // Referee ratings
   const [refereeRatings, setRefereeRatings] = useState<any[]>([]);
+  const [refereeRatingsLoading, setRefereeRatingsLoading] = useState(false);
+  const [refereeRatingsError, setRefereeRatingsError] = useState<string | null>(null);
+  const [refereeRatingsLoaded, setRefereeRatingsLoaded] = useState(false);
   const [teamTransactions, setTeamTransactions] = useState<TeamTransaction[]>([]);
   const [teamRoleDrafts, setTeamRoleDrafts] = useState<Record<number, string>>({});
   const [teamSyncBusy, setTeamSyncBusy] = useState(false);
@@ -3383,15 +3386,30 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
 
   async function loadRefereeRatings() {
     if (!supabase || !adminLogged) return;
-    const { data: session } = await supabase.auth.getSession();
-    const token = session?.session?.access_token;
-    if (!token) return;
-    const res = await fetch("/api/referee-rating", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
+    setRefereeRatingsLoading(true);
+    setRefereeRatingsError(null);
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const token = session?.session?.access_token;
+      if (!token) {
+        setRefereeRatingsError("Session expired — please log in again.");
+        return;
+      }
+      const res = await fetch("/api/referee-rating", {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
       const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRefereeRatingsError(data?.error || `Could not load ratings (HTTP ${res.status}).`);
+        return;
+      }
       setRefereeRatings(data.ratings || []);
+      setRefereeRatingsLoaded(true);
+    } catch (error: any) {
+      setRefereeRatingsError(error?.message || "Could not load ratings.");
+    } finally {
+      setRefereeRatingsLoading(false);
     }
   }
 
@@ -4707,6 +4725,15 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
     };
   }, [refereeLogged, adminLogged]);
 
+  // Ratings load by themselves when the Admin opens Teams & Staff (they used to
+  // appear only after clicking "Load Ratings", so new votes looked missing).
+  useEffect(() => {
+    if (adminLogged && adminView === "teams") {
+      loadRefereeRatings();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminLogged, adminView]);
+
   // Referees / Stat Trackers have a single page; send them there from /admin.
   useEffect(() => {
     if (!loading && isStaffOnly && pathname !== "/admin/matches") {
@@ -5889,13 +5916,22 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                               onClick={loadRefereeRatings}
                               className="rounded-full border border-orange-400/20 bg-orange-400/10 px-3 py-1 text-xs font-semibold text-amber-300 transition hover:bg-orange-400/15"
                             >
-                              Load Ratings
+                              {refereeRatingsLoading ? "Loading..." : "Refresh Ratings"}
                             </button>
                           </div>
 
+                          {refereeRatingsError ? (
+                            <p className="mb-3 rounded-xl border border-red-400/25 bg-red-400/10 px-3 py-2 text-sm text-red-200">
+                              {refereeRatingsError}
+                            </p>
+                          ) : null}
                           {refereeRatings.length === 0 ? (
                             <p className="text-sm text-white/40">
-                              Click "Load Ratings" to see referee evaluations from captains.
+                              {refereeRatingsLoading
+                                ? "Loading ratings..."
+                                : refereeRatingsLoaded
+                                  ? "No ratings have been received yet."
+                                  : "Ratings could not be loaded."}
                             </p>
                           ) : (() => {
                             // Group ratings by referee
@@ -5915,7 +5951,13 @@ export default function AdminConsole(_props: { children?: React.ReactNode }) {
                                   <div key={discordId} className="rounded-2xl border border-white/10 bg-white/5 p-4">
                                     <div className="mb-2 flex items-center justify-between">
                                       <p className="font-semibold text-white">
-                                        {discordId}
+                                        {(() => {
+                                          const staff = staffApplications.find((st) => st.discord_id === discordId);
+                                          return staff ? `${staff.roblox_username} (@${staff.discord_username})` : discordId;
+                                        })()}
+                                        {staffApplications.some((st) => st.discord_id === discordId) ? (
+                                          <span className="ml-2 text-xs font-normal text-white/40">{discordId}</span>
+                                        ) : null}
                                       </p>
                                       <span className="rounded-full bg-amber-400/20 px-3 py-1 text-xs font-bold text-amber-300">
                                         ⭐ {avg.toFixed(1)} / 5 ({ratings.length} vote{ratings.length !== 1 ? "s" : ""})
