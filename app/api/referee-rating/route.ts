@@ -24,17 +24,24 @@ export async function POST(request: NextRequest) {
     const auth = request.headers.get("authorization") || "";
     const expectedSecret = process.env.BOT_INTERNAL_SECRET || "";
     if (expectedSecret && auth !== `Bearer ${expectedSecret}`) {
+      console.error("[referee-rating] rejected: BOT_INTERNAL_SECRET is set on the site but the request did not send a matching Bearer secret.");
       return jsonError("Unauthorized.", 401);
     }
 
-    const { matchId, refereeDiscordId, captainDiscordId, rating, comment } =
-      await request.json().catch(() => ({}));
+    const payload = await request.json().catch(() => ({}));
+    const { matchId, refereeDiscordId, captainDiscordId, comment } = payload;
+    // Accept the rating as a number or a numeric string ("5"); the bot may send either.
+    const ratingValue = Number(payload.rating);
 
-    if (!matchId || !refereeDiscordId || !captainDiscordId || !rating)
+    if (!matchId || !refereeDiscordId || !captainDiscordId || !payload.rating) {
+      console.error("[referee-rating] rejected: missing fields", { matchId, refereeDiscordId, captainDiscordId, rating: payload.rating });
       return jsonError("matchId, refereeDiscordId, captainDiscordId, rating required.");
+    }
 
-    if (typeof rating !== "number" || rating < 1 || rating > 5)
-      return jsonError("rating must be 1–5.");
+    if (!Number.isInteger(ratingValue) || ratingValue < 1 || ratingValue > 5) {
+      console.error("[referee-rating] rejected: invalid rating", payload.rating);
+      return jsonError("rating must be an integer from 1 to 5.");
+    }
 
     // Prevent duplicate vote from same captain on same match
     const { data: existing } = await supabaseAdmin
@@ -50,11 +57,14 @@ export async function POST(request: NextRequest) {
       match_id:             Number(matchId),
       referee_discord_id:   String(refereeDiscordId),
       captain_discord_id:   String(captainDiscordId),
-      rating:               Number(rating),
+      rating:               ratingValue,
       comment:              comment ? String(comment).slice(0, 500) : null,
     });
 
-    if (error) return jsonError(error.message, 500);
+    if (error) {
+      console.error("[referee-rating] insert failed:", error.message);
+      return jsonError(error.message, 500);
+    }
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
